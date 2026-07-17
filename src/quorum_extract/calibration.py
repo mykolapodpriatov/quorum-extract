@@ -168,11 +168,11 @@ class _GroupModel:
             assert self.isotonic is not None
             shares = rows[:, 0]
             out = self.isotonic.predict(shares)
-            return np.clip(np.asarray(out, dtype=float), 0.0, 1.0)
+            return np.clip(np.asarray(out, dtype=np.float64), 0.0, 1.0)
         assert self.logistic is not None and self.scaler is not None
         scaled = self.scaler.transform(rows)
         proba = self.logistic.predict_proba(scaled)[:, 1]
-        return np.clip(np.asarray(proba, dtype=float), 0.0, 1.0)
+        return np.clip(np.asarray(proba, dtype=np.float64), 0.0, 1.0)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"method": self.method}
