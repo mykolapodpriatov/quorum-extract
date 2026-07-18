@@ -11,6 +11,7 @@ from quorum_extract import (
     FieldResult,
     RecordResult,
     field_contention,
+    suggest_labels,
     systematically_contested,
 )
 from quorum_extract.report import (
@@ -188,6 +189,64 @@ def test_diagnostics_json_schema() -> None:
     assert vendor["top_disagreement_keys"] == [["k", 2]]
     # Deterministic descending-contention field order.
     assert [f["path"] for f in payload["fields"]] == ["vendor", "total"]
+
+
+def test_suggest_labels_ranks_nearest_boundary_first() -> None:
+    records = [
+        record(
+            "d1",
+            {
+                "near": EscalationStatus.NEEDS_REVIEW,  # agreement 0.5 -> distance 0.0
+                "far": EscalationStatus.ACCEPTED,  # agreement 1.0 -> distance 0.5
+            },
+            {"near": 0.5, "far": 1.0},
+        ),
+        record(
+            "d2",
+            {"mid": EscalationStatus.NEEDS_REVIEW},  # agreement 0.7 -> distance 0.2
+            {"mid": 0.7},
+        ),
+    ]
+    ranked = suggest_labels(records, boundary=0.5)
+    assert [(s.doc_id, s.path) for s in ranked] == [
+        ("d1", "near"),
+        ("d2", "mid"),
+        ("d1", "far"),
+    ]
+    assert ranked[0].agreement == 0.5
+
+
+def test_suggest_labels_contested_breaks_ties() -> None:
+    # Two fields equidistant from the boundary; the contested one ranks first.
+    records = [
+        record(
+            "d1",
+            {
+                "accepted": EscalationStatus.ACCEPTED,
+                "contested": EscalationStatus.NEEDS_REVIEW,
+            },
+            {"accepted": 0.6, "contested": 0.6},
+        ),
+    ]
+    ranked = suggest_labels(records, boundary=0.5)
+    assert [s.path for s in ranked] == ["contested", "accepted"]
+
+
+def test_suggest_labels_stable_tiebreak_and_limit() -> None:
+    # Same distance and status across docs -> deterministic (doc_id, path) order.
+    records = [
+        record("d2", {"x": EscalationStatus.NEEDS_REVIEW}, {"x": 0.5}),
+        record("d1", {"x": EscalationStatus.NEEDS_REVIEW}, {"x": 0.5}),
+    ]
+    ranked = suggest_labels(records, n=1)
+    assert [(s.doc_id, s.path) for s in ranked] == [("d1", "x")]
+
+
+def test_suggest_labels_empty_and_nonpositive_n() -> None:
+    assert suggest_labels([]) == []
+    one = [record("d1", {"x": EscalationStatus.NEEDS_REVIEW}, {"x": 0.5})]
+    assert suggest_labels(one, n=0) == []
+    assert suggest_labels(one, n=-3) == []
 
 
 def test_render_diagnostics_dispatch_and_unknown_format() -> None:

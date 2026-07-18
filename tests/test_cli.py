@@ -122,6 +122,25 @@ def test_diagnose_empty_results_header_only(tmp_path) -> None:  # type: ignore[n
     assert res.output.startswith("path,contention_rate")
 
 
+def test_suggest_labels_emits_ranked_jsonl(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    out = tmp_path / "results.jsonl"
+    run_res = runner.invoke(
+        app, ["run", str(tmp_path), "--config", project, "--out", str(out), "--format", "json"]
+    )
+    assert run_res.exit_code == 0, run_res.output
+
+    res = runner.invoke(app, ["suggest-labels", str(out), "--n", "3"])
+    assert res.exit_code == 0, res.output
+    lines = [json.loads(line) for line in res.output.splitlines() if line.strip()]
+    assert 1 <= len(lines) <= 3
+    for row in lines:
+        assert set(row) == {"doc_id", "path", "agreement"}
+    # Output is deterministic across identical invocations.
+    res2 = runner.invoke(app, ["suggest-labels", str(out), "--n", "3"])
+    assert res2.output == res.output
+
+
 def test_run_term_format(tmp_path) -> None:  # type: ignore[no-untyped-def]
     project = write_project(tmp_path)
     result = runner.invoke(app, ["run", str(tmp_path), "--config", project])

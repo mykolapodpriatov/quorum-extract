@@ -36,7 +36,13 @@ from .calibration import (
 )
 from .cascade import CascadeResult, Document, cascade_corpus
 from .config import ProjectConfig, load_config, read_results, write_results
-from .diagnostics import FieldDiagnostic, field_contention, systematically_contested
+from .diagnostics import (
+    FieldDiagnostic,
+    LabelSuggestion,
+    field_contention,
+    suggest_labels,
+    systematically_contested,
+)
 from .extractors import (
     Extractor,
     ExtractorFailure,
@@ -90,6 +96,7 @@ __all__ = [
     "FieldResult",
     "FieldVote",
     "Fingerprint",
+    "LabelSuggestion",
     "LabeledExample",
     "LeafKind",
     "LeafPath",
@@ -122,6 +129,7 @@ __all__ = [
     "read_results",
     "run_extractors",
     "run_project",
+    "suggest_labels",
     "systematically_contested",
     "write_results",
 ]

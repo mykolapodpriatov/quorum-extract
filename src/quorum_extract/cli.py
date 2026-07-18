@@ -7,6 +7,7 @@ machine-readable JSON when asked.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -22,6 +23,7 @@ from .calibration import (
 )
 from .cascade import Document
 from .config import load_config, read_labeled, read_results, write_results
+from .diagnostics import suggest_labels
 from .human import (
     Override,
     ReviewQueue,
@@ -261,6 +263,33 @@ def review(
             value = choice
         write_override(overrides, Override(doc_id=item.doc_id, path=item.path, value=value))
         _out.print(f"  [green]resolved[/green] -> {value!r}")
+
+
+@app.command(name="suggest-labels")
+def suggest_labels_command(
+    results: Annotated[Path, typer.Argument(help="Results JSONL from `run`.")],
+    n: Annotated[int, typer.Option("--n", help="Number of suggestions to emit.")] = 10,
+    boundary: Annotated[
+        float, typer.Option(help="Accept boundary (quorum threshold) to rank against.")
+    ] = 0.5,
+) -> None:
+    """Rank which doc/field records to label next to most improve calibration.
+
+    Prints the top-N as JSONL of ``{doc_id, path, agreement}``, most informative
+    first (agreement nearest the accept boundary, contested fields breaking ties).
+    Fully offline and deterministic.
+    """
+    records = read_results(results)
+    for suggestion in suggest_labels(records, n=n, boundary=boundary):
+        typer.echo(
+            json.dumps(
+                {
+                    "doc_id": suggestion.doc_id,
+                    "path": suggestion.path,
+                    "agreement": suggestion.agreement,
+                }
+            )
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
