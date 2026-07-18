@@ -127,7 +127,7 @@ The full pipeline — voting, calibration, cascade, budget — is deterministic 
 - [x] Cost-aware escalation cascade + budget report
 - [x] Human-review queue + corpus diagnostics
 - [ ] Active-learning loop to grow the calibration set
-- [ ] Per-field reliability dashboard export
+- [x] Per-field reliability dashboard export (`diagnose` — CSV/MD/JSON)
 
 ## License
 

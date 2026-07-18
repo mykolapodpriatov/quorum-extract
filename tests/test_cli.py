@@ -88,6 +88,59 @@ def test_run_json_and_report(tmp_path) -> None:  # type: ignore[no-untyped-def]
     assert "Diagnostics" in rep.output
 
 
+def test_diagnose_csv_md_json_and_bad_format(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    out = tmp_path / "results.jsonl"
+    run_res = runner.invoke(
+        app, ["run", str(tmp_path), "--config", project, "--out", str(out), "--format", "json"]
+    )
+    assert run_res.exit_code == 0, run_res.output
+
+    csv_res = runner.invoke(app, ["diagnose", str(out)])  # default --format csv
+    assert csv_res.exit_code == 0, csv_res.output
+    assert "path,contention_rate,mean_agreement" in csv_res.output
+    assert "currency" in csv_res.output
+
+    md_res = runner.invoke(app, ["diagnose", str(out), "--format", "md", "--threshold", "0.4"])
+    assert md_res.exit_code == 0
+    assert "# Per-field reliability dashboard" in md_res.output
+
+    json_res = runner.invoke(app, ["diagnose", str(out), "--format", "json"])
+    assert json_res.exit_code == 0
+    payload = json.loads(json_res.output)
+    assert "fields" in payload and "systematically_contested" in payload
+
+    bad = runner.invoke(app, ["diagnose", str(out), "--format", "bogus"])
+    assert bad.exit_code == 2
+
+
+def test_diagnose_empty_results_header_only(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    empty = tmp_path / "results.jsonl"
+    empty.write_text("", encoding="utf-8")
+    res = runner.invoke(app, ["diagnose", str(empty)])
+    assert res.exit_code == 0
+    assert res.output.startswith("path,contention_rate")
+
+
+def test_suggest_labels_emits_ranked_jsonl(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    out = tmp_path / "results.jsonl"
+    run_res = runner.invoke(
+        app, ["run", str(tmp_path), "--config", project, "--out", str(out), "--format", "json"]
+    )
+    assert run_res.exit_code == 0, run_res.output
+
+    res = runner.invoke(app, ["suggest-labels", str(out), "--n", "3"])
+    assert res.exit_code == 0, res.output
+    lines = [json.loads(line) for line in res.output.splitlines() if line.strip()]
+    assert 1 <= len(lines) <= 3
+    for row in lines:
+        assert set(row) == {"doc_id", "path", "agreement"}
+    # Output is deterministic across identical invocations.
+    res2 = runner.invoke(app, ["suggest-labels", str(out), "--n", "3"])
+    assert res2.output == res.output
+
+
 def test_run_term_format(tmp_path) -> None:  # type: ignore[no-untyped-def]
     project = write_project(tmp_path)
     result = runner.invoke(app, ["run", str(tmp_path), "--config", project])
@@ -143,6 +196,68 @@ def test_run_queue_and_review_and_override(tmp_path) -> None:  # type: ignore[no
     recs = {r["doc_id"]: r for r in payload["records"]}
     assert recs["d1"]["fields"]["currency"]["status"] == "resolved"
     assert recs["d1"]["fields"]["currency"]["value"] == "USD"
+
+
+def test_review_resolve_single(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"  # need not exist for --resolve
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        ["review", str(queue), "--overrides", str(overrides), "--resolve", "d1:currency=USD"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "Recorded 1 override" in res.output
+    rows = [json.loads(line) for line in overrides.read_text().splitlines() if line.strip()]
+    assert rows == [{"doc_id": "d1", "path": "currency", "value": "USD"}]
+
+
+def test_review_resolve_many(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        [
+            "review",
+            str(queue),
+            "--overrides",
+            str(overrides),
+            "--resolve",
+            "d1:currency=USD",
+            # value may itself contain ':' and '=' (split is on the first of each).
+            "--resolve",
+            "d2:note=key=val:extra",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    rows = [json.loads(line) for line in overrides.read_text().splitlines() if line.strip()]
+    assert rows == [
+        {"doc_id": "d1", "path": "currency", "value": "USD"},
+        {"doc_id": "d2", "path": "note", "value": "key=val:extra"},
+    ]
+
+
+def test_review_resolve_malformed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        ["review", str(queue), "--overrides", str(overrides), "--resolve", "d1-currency-USD"],
+    )
+    assert res.exit_code == 2
+    assert "invalid --resolve spec" in res.output.lower()
+    # Nothing is written when any spec is malformed.
+    assert not overrides.exists()
+
+
+def test_review_resolve_empty_path(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        ["review", str(queue), "--overrides", str(overrides), "--resolve", "d1:=USD"],
+    )
+    assert res.exit_code == 2
+    assert "empty doc_id or path" in res.output.lower()
 
 
 def test_calibrate_happy_path(tmp_path) -> None:  # type: ignore[no-untyped-def]

@@ -79,3 +79,52 @@ def field_contention(records: Sequence[RecordResult]) -> list[FieldDiagnostic]:
 def systematically_contested(records: Sequence[RecordResult], threshold: float = 0.5) -> list[str]:
     """Field paths whose contention rate meets ``threshold`` (sorted)."""
     return [d.path for d in field_contention(records) if d.contention_rate >= threshold]
+
+
+@dataclass(frozen=True, slots=True)
+class LabelSuggestion:
+    """A ``(doc_id, path)`` pick to label next, ranked by informativeness."""
+
+    doc_id: str
+    path: str
+    agreement: float
+
+
+def suggest_labels(
+    records: Sequence[RecordResult],
+    *,
+    n: int | None = None,
+    boundary: float = 0.5,
+) -> list[LabelSuggestion]:
+    """Rank ``(doc_id, path)`` records by how informative labeling them would be.
+
+    Active-learning first slice (plan: "grow the calibration set"): the most
+    informative labels are the ones the ensemble is least sure about -- agreement
+    sitting right on the accept ``boundary`` (the quorum threshold). Contested
+    fields break ties (they cost a human/escalation either way), then a stable
+    ``(doc_id, path)`` order makes the output fully deterministic and offline.
+
+    Args:
+        records: The corpus results (from :func:`read_results`).
+        n: Return at most this many suggestions (all when ``None``); negative
+            values yield an empty list.
+        boundary: The accept threshold agreement is measured against.
+
+    Returns:
+        Suggestions ordered most-informative first.
+    """
+    scored: list[tuple[float, int, str, str, float]] = []
+    for record in records:
+        for path in sorted(record.fields):
+            fr = record.fields[path]
+            distance = abs(fr.agreement - boundary)
+            contested = 0 if fr.status is not EscalationStatus.ACCEPTED else 1
+            scored.append((distance, contested, record.doc_id, path, fr.agreement))
+    scored.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
+    out = [
+        LabelSuggestion(doc_id=doc_id, path=path, agreement=agreement)
+        for _, _, doc_id, path, agreement in scored
+    ]
+    if n is not None:
+        return out[: max(n, 0)]
+    return out

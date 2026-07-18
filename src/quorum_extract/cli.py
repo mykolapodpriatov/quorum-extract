@@ -7,6 +7,7 @@ machine-readable JSON when asked.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -22,6 +23,7 @@ from .calibration import (
 )
 from .cascade import Document
 from .config import load_config, read_labeled, read_results, write_results
+from .diagnostics import suggest_labels
 from .human import (
     Override,
     ReviewQueue,
@@ -164,6 +166,53 @@ def report(
         typer.echo(rendered)
 
 
+def _parse_resolve(spec: str) -> Override:
+    """Parse a ``"doc_id:path=value"`` resolution spec into an :class:`Override`.
+
+    Splits on the first ``:`` (doc id) and then the first ``=`` (path / value), so
+    values may contain ``:`` and ``=``. ``doc_id`` and ``path`` must be non-empty.
+
+    Raises:
+        ValueError: if the spec is missing its ``:`` or ``=``, or has an empty
+            doc id or path.
+    """
+    doc_part, sep, rest = spec.partition(":")
+    if not sep:
+        raise ValueError(f"missing ':' in resolve spec {spec!r} (expected 'doc_id:path=value')")
+    path_part, eq, value = rest.partition("=")
+    if not eq:
+        raise ValueError(f"missing '=' in resolve spec {spec!r} (expected 'doc_id:path=value')")
+    doc_id = doc_part.strip()
+    path = path_part.strip()
+    if not doc_id or not path:
+        raise ValueError(f"empty doc_id or path in resolve spec {spec!r}")
+    return Override(doc_id=doc_id, path=path, value=value)
+
+
+@app.command()
+def diagnose(
+    results: Annotated[Path, typer.Argument(help="Results JSONL from `run`.")],
+    fmt: Annotated[str, typer.Option("--format", "-f", help="csv|md|json.")] = "csv",
+    threshold: Annotated[
+        float,
+        typer.Option(help="Contention rate at/above which a field is flagged systematic."),
+    ] = 0.5,
+) -> None:
+    """Export the per-field reliability dashboard (CSV/MD/JSON).
+
+    One row per field path, sorted by descending contention. CSV is the point:
+    it drops straight into a spreadsheet for the "which fields are systematically
+    hard" review. An empty results file yields a header-only export, not an error.
+    """
+    records = read_results(results)
+    try:
+        rendered = report_mod.render_diagnostics(records, fmt, threshold)
+    except ValueError as exc:
+        _err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    typer.echo(rendered)
+
+
 @app.command()
 def review(
     queue: Annotated[Path, typer.Argument(help="Review queue JSONL.")],
@@ -173,8 +222,25 @@ def review(
     non_interactive: Annotated[
         bool, typer.Option("--list", help="List pending items and exit (no prompts).")
     ] = False,
+    resolve: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--resolve",
+            help='Non-interactive: record "doc_id:path=value" and exit (repeatable).',
+        ),
+    ] = None,
 ) -> None:
     """Work the human-review queue; resolutions append to an overrides file."""
+    if resolve:
+        try:
+            parsed = [_parse_resolve(spec) for spec in resolve]
+        except ValueError as exc:
+            _err.print(f"[red]invalid --resolve spec:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
+        for override in parsed:
+            write_override(overrides, override)
+        _out.print(f"[green]Recorded {len(parsed)} override(s)[/green] -> {overrides}")
+        return
     rq = ReviewQueue(queue)
     items = rq.load()
     if not items:
@@ -197,6 +263,33 @@ def review(
             value = choice
         write_override(overrides, Override(doc_id=item.doc_id, path=item.path, value=value))
         _out.print(f"  [green]resolved[/green] -> {value!r}")
+
+
+@app.command(name="suggest-labels")
+def suggest_labels_command(
+    results: Annotated[Path, typer.Argument(help="Results JSONL from `run`.")],
+    n: Annotated[int, typer.Option("--n", help="Number of suggestions to emit.")] = 10,
+    boundary: Annotated[
+        float, typer.Option(help="Accept boundary (quorum threshold) to rank against.")
+    ] = 0.5,
+) -> None:
+    """Rank which doc/field records to label next to most improve calibration.
+
+    Prints the top-N as JSONL of ``{doc_id, path, agreement}``, most informative
+    first (agreement nearest the accept boundary, contested fields breaking ties).
+    Fully offline and deterministic.
+    """
+    records = read_results(results)
+    for suggestion in suggest_labels(records, n=n, boundary=boundary):
+        typer.echo(
+            json.dumps(
+                {
+                    "doc_id": suggestion.doc_id,
+                    "path": suggestion.path,
+                    "agreement": suggestion.agreement,
+                }
+            )
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
