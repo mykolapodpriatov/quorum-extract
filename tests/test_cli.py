@@ -179,6 +179,68 @@ def test_run_queue_and_review_and_override(tmp_path) -> None:  # type: ignore[no
     assert recs["d1"]["fields"]["currency"]["value"] == "USD"
 
 
+def test_review_resolve_single(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"  # need not exist for --resolve
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        ["review", str(queue), "--overrides", str(overrides), "--resolve", "d1:currency=USD"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "Recorded 1 override" in res.output
+    rows = [json.loads(line) for line in overrides.read_text().splitlines() if line.strip()]
+    assert rows == [{"doc_id": "d1", "path": "currency", "value": "USD"}]
+
+
+def test_review_resolve_many(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        [
+            "review",
+            str(queue),
+            "--overrides",
+            str(overrides),
+            "--resolve",
+            "d1:currency=USD",
+            # value may itself contain ':' and '=' (split is on the first of each).
+            "--resolve",
+            "d2:note=key=val:extra",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    rows = [json.loads(line) for line in overrides.read_text().splitlines() if line.strip()]
+    assert rows == [
+        {"doc_id": "d1", "path": "currency", "value": "USD"},
+        {"doc_id": "d2", "path": "note", "value": "key=val:extra"},
+    ]
+
+
+def test_review_resolve_malformed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        ["review", str(queue), "--overrides", str(overrides), "--resolve", "d1-currency-USD"],
+    )
+    assert res.exit_code == 2
+    assert "invalid --resolve spec" in res.output.lower()
+    # Nothing is written when any spec is malformed.
+    assert not overrides.exists()
+
+
+def test_review_resolve_empty_path(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        ["review", str(queue), "--overrides", str(overrides), "--resolve", "d1:=USD"],
+    )
+    assert res.exit_code == 2
+    assert "empty doc_id or path" in res.output.lower()
+
+
 def test_calibrate_happy_path(tmp_path) -> None:  # type: ignore[no-untyped-def]
     import random
 

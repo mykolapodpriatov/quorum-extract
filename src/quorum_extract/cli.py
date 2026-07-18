@@ -164,6 +164,29 @@ def report(
         typer.echo(rendered)
 
 
+def _parse_resolve(spec: str) -> Override:
+    """Parse a ``"doc_id:path=value"`` resolution spec into an :class:`Override`.
+
+    Splits on the first ``:`` (doc id) and then the first ``=`` (path / value), so
+    values may contain ``:`` and ``=``. ``doc_id`` and ``path`` must be non-empty.
+
+    Raises:
+        ValueError: if the spec is missing its ``:`` or ``=``, or has an empty
+            doc id or path.
+    """
+    doc_part, sep, rest = spec.partition(":")
+    if not sep:
+        raise ValueError(f"missing ':' in resolve spec {spec!r} (expected 'doc_id:path=value')")
+    path_part, eq, value = rest.partition("=")
+    if not eq:
+        raise ValueError(f"missing '=' in resolve spec {spec!r} (expected 'doc_id:path=value')")
+    doc_id = doc_part.strip()
+    path = path_part.strip()
+    if not doc_id or not path:
+        raise ValueError(f"empty doc_id or path in resolve spec {spec!r}")
+    return Override(doc_id=doc_id, path=path, value=value)
+
+
 @app.command()
 def diagnose(
     results: Annotated[Path, typer.Argument(help="Results JSONL from `run`.")],
@@ -197,8 +220,25 @@ def review(
     non_interactive: Annotated[
         bool, typer.Option("--list", help="List pending items and exit (no prompts).")
     ] = False,
+    resolve: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--resolve",
+            help='Non-interactive: record "doc_id:path=value" and exit (repeatable).',
+        ),
+    ] = None,
 ) -> None:
     """Work the human-review queue; resolutions append to an overrides file."""
+    if resolve:
+        try:
+            parsed = [_parse_resolve(spec) for spec in resolve]
+        except ValueError as exc:
+            _err.print(f"[red]invalid --resolve spec:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
+        for override in parsed:
+            write_override(overrides, override)
+        _out.print(f"[green]Recorded {len(parsed)} override(s)[/green] -> {overrides}")
+        return
     rq = ReviewQueue(queue)
     items = rq.load()
     if not items:
