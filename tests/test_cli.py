@@ -88,6 +88,40 @@ def test_run_json_and_report(tmp_path) -> None:  # type: ignore[no-untyped-def]
     assert "Diagnostics" in rep.output
 
 
+def test_diagnose_csv_md_json_and_bad_format(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    out = tmp_path / "results.jsonl"
+    run_res = runner.invoke(
+        app, ["run", str(tmp_path), "--config", project, "--out", str(out), "--format", "json"]
+    )
+    assert run_res.exit_code == 0, run_res.output
+
+    csv_res = runner.invoke(app, ["diagnose", str(out)])  # default --format csv
+    assert csv_res.exit_code == 0, csv_res.output
+    assert "path,contention_rate,mean_agreement" in csv_res.output
+    assert "currency" in csv_res.output
+
+    md_res = runner.invoke(app, ["diagnose", str(out), "--format", "md", "--threshold", "0.4"])
+    assert md_res.exit_code == 0
+    assert "# Per-field reliability dashboard" in md_res.output
+
+    json_res = runner.invoke(app, ["diagnose", str(out), "--format", "json"])
+    assert json_res.exit_code == 0
+    payload = json.loads(json_res.output)
+    assert "fields" in payload and "systematically_contested" in payload
+
+    bad = runner.invoke(app, ["diagnose", str(out), "--format", "bogus"])
+    assert bad.exit_code == 2
+
+
+def test_diagnose_empty_results_header_only(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    empty = tmp_path / "results.jsonl"
+    empty.write_text("", encoding="utf-8")
+    res = runner.invoke(app, ["diagnose", str(empty)])
+    assert res.exit_code == 0
+    assert res.output.startswith("path,contention_rate")
+
+
 def test_run_term_format(tmp_path) -> None:  # type: ignore[no-untyped-def]
     project = write_project(tmp_path)
     result = runner.invoke(app, ["run", str(tmp_path), "--config", project])

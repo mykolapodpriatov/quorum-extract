@@ -165,6 +165,30 @@ def report(
 
 
 @app.command()
+def diagnose(
+    results: Annotated[Path, typer.Argument(help="Results JSONL from `run`.")],
+    fmt: Annotated[str, typer.Option("--format", "-f", help="csv|md|json.")] = "csv",
+    threshold: Annotated[
+        float,
+        typer.Option(help="Contention rate at/above which a field is flagged systematic."),
+    ] = 0.5,
+) -> None:
+    """Export the per-field reliability dashboard (CSV/MD/JSON).
+
+    One row per field path, sorted by descending contention. CSV is the point:
+    it drops straight into a spreadsheet for the "which fields are systematically
+    hard" review. An empty results file yields a header-only export, not an error.
+    """
+    records = read_results(results)
+    try:
+        rendered = report_mod.render_diagnostics(records, fmt, threshold)
+    except ValueError as exc:
+        _err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    typer.echo(rendered)
+
+
+@app.command()
 def review(
     queue: Annotated[Path, typer.Argument(help="Review queue JSONL.")],
     overrides: Annotated[

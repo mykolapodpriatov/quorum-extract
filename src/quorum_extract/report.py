@@ -10,6 +10,7 @@ the budget summary, and corpus diagnostics, in three formats:
 
 from __future__ import annotations
 
+import csv
 import json
 from collections.abc import Sequence
 from io import StringIO
@@ -18,7 +19,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import record_to_dict
-from .diagnostics import field_contention
+from .diagnostics import field_contention, systematically_contested
 from .types import BudgetReport, EscalationStatus, RecordResult
 
 _STATUS_STYLE = {
@@ -168,3 +169,112 @@ def render(
     if fmt == "term":
         return render_terminal(records, budget)
     raise ValueError(f"unknown report format: {fmt!r} (use term|md|json)")
+
+
+# --------------------------------------------------------------------------- #
+# Per-field reliability dashboard export (``diagnose``)
+# --------------------------------------------------------------------------- #
+
+_DIAGNOSTIC_COLUMNS = (
+    "path",
+    "contention_rate",
+    "mean_agreement",
+    "n_contested",
+    "n_records",
+    "systematically_contested",
+    "top_disagreement_keys",
+)
+
+
+def _disagreement_keys_str(keys: Sequence[tuple[str, int]]) -> str:
+    """Compact, deterministic ``key (count)`` rendering for text/CSV cells."""
+    return "; ".join(f"{key} ({count})" for key, count in keys)
+
+
+def render_diagnostics_csv(records: Sequence[RecordResult], threshold: float = 0.5) -> str:
+    """Per-field reliability dashboard as CSV (stdlib ``csv`` into a ``StringIO``).
+
+    One row per field path, sorted by descending contention (via
+    :func:`~quorum_extract.diagnostics.field_contention`). An empty corpus yields
+    a header-only document rather than an error, so the export never breaks a
+    pipeline. This drops straight into a spreadsheet for the "which fields are
+    systematically hard" review.
+    """
+    flagged = set(systematically_contested(records, threshold))
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(_DIAGNOSTIC_COLUMNS)
+    for d in field_contention(records):
+        writer.writerow(
+            [
+                d.path,
+                f"{d.contention_rate:.4f}",
+                f"{d.mean_agreement:.4f}",
+                d.n_contested,
+                d.n_records,
+                "true" if d.path in flagged else "false",
+                _disagreement_keys_str(d.top_disagreement_keys),
+            ]
+        )
+    return buf.getvalue()
+
+
+def render_diagnostics_md(records: Sequence[RecordResult], threshold: float = 0.5) -> str:
+    """Per-field reliability dashboard as GitHub-flavored Markdown."""
+    flagged = set(systematically_contested(records, threshold))
+    flagged_note = ", ".join(f"`{p}`" for p in sorted(flagged)) if flagged else "_none_"
+    lines: list[str] = [
+        "# Per-field reliability dashboard",
+        "",
+        f"Systematically contested (contention rate >= {threshold:.2f}): {flagged_note}",
+        "",
+        (
+            "| field | contention rate | mean agreement | contested | records "
+            "| systematic | top disagreement keys |"
+        ),
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for d in field_contention(records):
+        lines.append(
+            f"| `{d.path}` | {d.contention_rate:.2f} | {d.mean_agreement:.2f} | "
+            f"{d.n_contested} | {d.n_records} | "
+            f"{'yes' if d.path in flagged else 'no'} | "
+            f"{_disagreement_keys_str(d.top_disagreement_keys)} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_diagnostics_json(records: Sequence[RecordResult], threshold: float = 0.5) -> str:
+    """Per-field reliability dashboard as machine-readable, schema-stable JSON."""
+    flagged = set(systematically_contested(records, threshold))
+    payload: dict[str, object] = {
+        "threshold": threshold,
+        "systematically_contested": sorted(flagged),
+        "fields": [
+            {
+                "path": d.path,
+                "contention_rate": d.contention_rate,
+                "mean_agreement": d.mean_agreement,
+                "n_contested": d.n_contested,
+                "n_records": d.n_records,
+                "systematically_contested": d.path in flagged,
+                "top_disagreement_keys": [[key, count] for key, count in d.top_disagreement_keys],
+            }
+            for d in field_contention(records)
+        ],
+    }
+    return json.dumps(payload, indent=2)
+
+
+def render_diagnostics(
+    records: Sequence[RecordResult], fmt: str = "csv", threshold: float = 0.5
+) -> str:
+    """Dispatch to a dashboard renderer by format name (``csv`` | ``md`` | ``json``)."""
+    if fmt == "csv":
+        return render_diagnostics_csv(records, threshold)
+    if fmt == "md":
+        return render_diagnostics_md(records, threshold)
+    if fmt == "json":
+        return render_diagnostics_json(records, threshold)
+    raise ValueError(f"unknown diagnostics format: {fmt!r} (use csv|md|json)")
