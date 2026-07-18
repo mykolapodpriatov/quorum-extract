@@ -66,6 +66,7 @@ def render_json(records: Sequence[RecordResult], budget: BudgetReport | None = N
             "mean_agreement": d.mean_agreement,
             "n_contested": d.n_contested,
             "n_records": d.n_records,
+            "top_disagreement_keys": [[key, count] for key, count in d.top_disagreement_keys],
         }
         for d in field_contention(records)
     ]
@@ -107,11 +108,14 @@ def render_markdown(records: Sequence[RecordResult], budget: BudgetReport | None
         lines += [
             "## Diagnostics (contention by field)",
             "",
-            "| field | contention rate | mean agreement |",
-            "| --- | --- | --- |",
+            "| field | contention rate | mean agreement | top disagreement keys |",
+            "| --- | --- | --- | --- |",
         ]
         for d in diags:
-            lines.append(f"| `{d.path}` | {d.contention_rate:.2f} | {d.mean_agreement:.2f} |")
+            lines.append(
+                f"| `{d.path}` | {d.contention_rate:.2f} | {d.mean_agreement:.2f} | "
+                f"{_disagreement_keys_str(d.top_disagreement_keys)} |"
+            )
         lines.append("")
     return "\n".join(lines)
 
