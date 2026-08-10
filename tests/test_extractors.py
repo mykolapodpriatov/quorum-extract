@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import builtins
+import time
 
 import pytest
 
 from quorum_extract import (
     Extractor,
     ExtractorFailure,
+    ExtractorSpec,
     FakeExtractor,
     anthropic_extractor,
     ollama_extractor,
@@ -72,6 +74,67 @@ def test_run_extractors_non_dict_return_is_failure() -> None:
     bad = FakeExtractor("bad", fn=lambda doc: ["not", "a", "dict"]).to_spec()  # type: ignore[arg-type,return-value]
     outputs = run_extractors([bad], {"id": "d1"})
     assert outputs[0].ok is False
+
+
+def _sleepy_spec(name: str, delay: float, *, fail: bool = False) -> ExtractorSpec:
+    def _fn(doc: object) -> dict[str, object]:
+        time.sleep(delay)
+        if fail:
+            raise ExtractorFailure(f"{name} configured to fail")
+        return {"name": name}
+
+    return FakeExtractor(name, fn=_fn, cost_usd=0.0).to_spec()
+
+
+def test_run_extractors_concurrency_defaults_to_sequential() -> None:
+    specs = [_sleepy_spec(f"e{i}", 0.05) for i in range(5)]
+
+    start = time.perf_counter()
+    outputs = run_extractors(specs, {"id": "d1"})
+    elapsed = time.perf_counter() - start
+
+    assert elapsed >= 0.25 * 0.9  # five sequential 50ms calls, some slack
+    assert [o.data["name"] for o in outputs] == [f"e{i}" for i in range(5)]
+
+
+def test_run_extractors_concurrency_parallelizes_calls() -> None:
+    specs = [_sleepy_spec(f"e{i}", 0.05) for i in range(5)]
+
+    start = time.perf_counter()
+    seq_outputs = run_extractors(specs, {"id": "d1"}, concurrency=1)
+    seq_elapsed = time.perf_counter() - start
+
+    start = time.perf_counter()
+    par_outputs = run_extractors(specs, {"id": "d1"}, concurrency=5)
+    par_elapsed = time.perf_counter() - start
+
+    # Wall clock drops substantially once calls run concurrently.
+    assert par_elapsed < seq_elapsed / 2
+
+    # Same outputs, same order, regardless of completion order.
+    assert [o.spec.name for o in par_outputs] == [o.spec.name for o in seq_outputs]
+    assert [o.data for o in par_outputs] == [o.data for o in seq_outputs]
+    assert [o.ok for o in par_outputs] == [o.ok for o in seq_outputs] == [True] * 5
+
+
+def test_run_extractors_concurrency_preserves_order_with_failures() -> None:
+    specs = [
+        _sleepy_spec("good-1", 0.01),
+        _sleepy_spec("bad", 0.03, fail=True),
+        _sleepy_spec("good-2", 0.01),
+    ]
+    outputs = run_extractors(specs, {"id": "d1"}, concurrency=3)
+    assert len(outputs) == 3  # K preserved
+    assert [o.spec.name for o in outputs] == ["good-1", "bad", "good-2"]
+    assert [o.ok for o in outputs] == [True, False, True]
+    assert outputs[1].data == {}
+
+
+def test_run_extractors_concurrency_single_spec_no_pool_overhead() -> None:
+    spec = _sleepy_spec("only", 0.01)
+    outputs = run_extractors([spec], {"id": "d1"}, concurrency=8)
+    assert len(outputs) == 1
+    assert outputs[0].ok is True
 
 
 def test_to_spec_carries_cost_and_tier() -> None:

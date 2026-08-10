@@ -48,20 +48,36 @@ It extracts three invoices with three cheap extractors plus one strong extractor
 ```python
 from pydantic import BaseModel
 from quorum_extract import (
-    Document, QuorumConfig, FakeExtractor, leaf_paths, cascade_corpus, run_extractors,
+    Document,
+    QuorumConfig,
+    FakeExtractor,
+    leaf_paths,
+    cascade_corpus,
+    run_extractors,
 )
+
 
 class Invoice(BaseModel):
     vendor: str
     total: float
     currency: str
 
+
 cheap = [
-    FakeExtractor("a", outputs={"d1": {"vendor": "ACME", "total": "100.0", "currency": "USD"}}, tier=0),
-    FakeExtractor("b", outputs={"d1": {"vendor": "acme", "total": 100,     "currency": "EUR"}}, tier=0),
-    FakeExtractor("c", outputs={"d1": {"vendor": " ACME ", "total": 100.0, "currency": "GBP"}}, tier=0),
+    FakeExtractor(
+        "a", outputs={"d1": {"vendor": "ACME", "total": "100.0", "currency": "USD"}}, tier=0
+    ),
+    FakeExtractor("b", outputs={"d1": {"vendor": "acme", "total": 100, "currency": "EUR"}}, tier=0),
+    FakeExtractor(
+        "c", outputs={"d1": {"vendor": " ACME ", "total": 100.0, "currency": "GBP"}}, tier=0
+    ),
 ]
-strong = FakeExtractor("strong", outputs={"d1": {"vendor": "ACME", "total": 100, "currency": "USD"}}, cost_usd=0.05, tier=1)
+strong = FakeExtractor(
+    "strong",
+    outputs={"d1": {"vendor": "ACME", "total": 100, "currency": "USD"}},
+    cost_usd=0.05,
+    tier=1,
+)
 
 cfg = QuorumConfig(min_agreement=0.66, escalate_tier=1, escalation_merge="strong_wins")
 result = cascade_corpus(
@@ -81,6 +97,7 @@ for path, fr in sorted(result.records[0].fields.items()):
 
 ```bash
 quorum-extract run docs/ --config project.py --out results.jsonl   # extract + reconcile + cascade
+quorum-extract run docs/ --config project.py --concurrency 8       # parallelize provider calls per doc
 quorum-extract calibrate --labeled labels.jsonl --method isotonic --out calibrator.json
 quorum-extract report results.jsonl --format md                    # annotated output + diagnostics
 quorum-extract review queue.jsonl --list                           # work the human queue

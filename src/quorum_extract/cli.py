@@ -78,11 +78,21 @@ def run(
         Path | None,
         typer.Option("--queue", help="Append needs-review items to this JSONL queue."),
     ] = None,
+    concurrency: Annotated[
+        int,
+        typer.Option(
+            "--concurrency",
+            help="Parallel extractor calls per document. Default 1 (sequential).",
+        ),
+    ] = 1,
 ) -> None:
     """Extract + reconcile + cascade a corpus; print the cost report."""
+    if concurrency < 1:
+        _err.print("[red]--concurrency must be >= 1[/red]")
+        raise typer.Exit(code=2)
     cfg = load_config(config)
     documents = _load_documents(docs, cfg)
-    run_report, records = run_project(cfg, documents)
+    run_report, records = run_project(cfg, documents, concurrency=concurrency)
 
     if out is not None:
         write_results(out, records)

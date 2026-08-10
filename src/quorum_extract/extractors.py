@@ -4,6 +4,8 @@ An *extractor* is any callable ``doc -> dict`` (the :class:`Extractor` protocol)
 :func:`run_extractors` invokes a list of :class:`~quorum_extract.types.ExtractorSpec`
 against one document, capturing failures as ``ok=False`` outputs so K is
 preserved (a failed extractor becomes a ``missing`` vote, never a smaller pool).
+Its ``concurrency`` option fires those K calls through a thread pool, which
+matters once the specs are network-bound provider extractors.
 
 :class:`FakeExtractor` is the workhorse for deterministic, offline tests and
 examples: it returns canned, per-document output and can be configured to agree
@@ -18,6 +20,7 @@ its SDK raises a clear, actionable error (M3 surface, designed for offline CI).
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol, runtime_checkable
 
 from .quorum import ExtractorOutput
@@ -39,24 +42,39 @@ class ExtractorFailure(RuntimeError):
     """
 
 
-def run_extractors(specs: Sequence[ExtractorSpec], doc: DocInput) -> list[ExtractorOutput]:
+def _invoke_one(spec: ExtractorSpec, doc: DocInput) -> ExtractorOutput:
+    """Call a single spec against ``doc``, capturing any failure as ``ok=False``."""
+    try:
+        data = spec.fn(doc)
+        if not isinstance(data, Mapping):
+            raise ExtractorFailure(
+                f"extractor {spec.name!r} returned {type(data).__name__}, expected a dict"
+            )
+        return ExtractorOutput(spec=spec, data=dict(data), ok=True)
+    except Exception:
+        return ExtractorOutput(spec=spec, data={}, ok=False)
+
+
+def run_extractors(
+    specs: Sequence[ExtractorSpec], doc: DocInput, *, concurrency: int = 1
+) -> list[ExtractorOutput]:
     """Invoke each spec against ``doc``, capturing failures as ``ok=False``.
 
     Any exception raised by an extractor (not only :class:`ExtractorFailure`) is
     caught and recorded as a failed invocation; K is preserved.
+
+    ``concurrency`` bounds how many specs are invoked in parallel via a
+    :class:`~concurrent.futures.ThreadPoolExecutor` -- the right knob for
+    provider-backed extractors, whose cost is network latency, not CPU. The
+    default of ``1`` keeps the original, fully sequential behavior (no thread
+    pool is created). Regardless of concurrency or completion order, the
+    returned list is always in ``specs`` order.
     """
-    outputs: list[ExtractorOutput] = []
-    for spec in specs:
-        try:
-            data = spec.fn(doc)
-            if not isinstance(data, Mapping):
-                raise ExtractorFailure(
-                    f"extractor {spec.name!r} returned {type(data).__name__}, expected a dict"
-                )
-            outputs.append(ExtractorOutput(spec=spec, data=dict(data), ok=True))
-        except Exception:
-            outputs.append(ExtractorOutput(spec=spec, data={}, ok=False))
-    return outputs
+    if concurrency <= 1 or len(specs) <= 1:
+        return [_invoke_one(spec, doc) for spec in specs]
+    with ThreadPoolExecutor(max_workers=min(concurrency, len(specs))) as executor:
+        futures = [executor.submit(_invoke_one, spec, doc) for spec in specs]
+        return [future.result() for future in futures]
 
 
 class FakeExtractor:

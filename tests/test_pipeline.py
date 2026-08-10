@@ -105,6 +105,14 @@ def test_run_project_counts_and_budget() -> None:
     assert report.leaf_paths == cfg.leaf_path_strings()
 
 
+def test_run_project_concurrency_matches_sequential_output() -> None:
+    cfg, docs = build_config()
+    seq_report, seq_records = run_project(cfg, docs, concurrency=1)
+    par_report, par_records = run_project(cfg, docs, concurrency=4)
+    assert [r.model_dump() for r in par_records] == [r.model_dump() for r in seq_records]
+    assert par_report.budget == seq_report.budget
+
+
 def test_run_project_status_tally_consistency() -> None:
     cfg, docs = build_config()
     report, records = run_project(cfg, docs)
