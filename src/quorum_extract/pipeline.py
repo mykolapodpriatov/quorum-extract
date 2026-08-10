@@ -13,7 +13,8 @@ from .calibration import AgreementCalibrator, Fingerprint, fingerprint_for
 from .cascade import Document, cascade_corpus
 from .config import ProjectConfig
 from .extractors import run_extractors
-from .types import EscalationStatus, RecordResult, RunReport
+from .quorum import ExtractorOutput
+from .types import DocInput, EscalationStatus, ExtractorSpec, RecordResult, RunReport
 
 
 def _load_calibrator(config: ProjectConfig) -> AgreementCalibrator | None:
@@ -50,6 +51,7 @@ def run_project(
     documents: Sequence[Document],
     *,
     calibrator: AgreementCalibrator | None = None,
+    concurrency: int = 1,
 ) -> tuple[RunReport, list[RecordResult]]:
     """Execute the full pipeline for a corpus.
 
@@ -58,6 +60,11 @@ def run_project(
         documents: Documents to process (with stable ids).
         calibrator: Optional pre-loaded calibrator; if omitted, one is loaded
             from ``config.quorum.calibrator_path`` when set.
+        concurrency: How many of a document's extractor calls to fire in
+            parallel (see :func:`~quorum_extract.extractors.run_extractors`).
+            Defaults to ``1`` -- fully sequential, matching prior behavior.
+            Document order and per-document budget accounting are unaffected;
+            only the K extractor calls *within* a document are parallelized.
 
     Returns:
         ``(report, records)`` where ``report`` aggregates counts + budget and
@@ -65,6 +72,9 @@ def run_project(
     """
     if calibrator is None:
         calibrator = _load_calibrator(config)
+
+    def _extract_fn(specs: Sequence[ExtractorSpec], doc: DocInput) -> list[ExtractorOutput]:
+        return run_extractors(specs, doc, concurrency=concurrency)
 
     result = cascade_corpus(
         documents,
@@ -74,7 +84,7 @@ def run_project(
         strong_spec=config.strong_extractor,
         calibrator=calibrator,
         calibration_groups=config.calibration_groups,
-        extract_fn=run_extractors,
+        extract_fn=_extract_fn,
     )
 
     n_accepted = n_escalated = n_review = n_resolved = 0

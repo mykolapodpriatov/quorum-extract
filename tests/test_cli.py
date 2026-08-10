@@ -148,6 +148,28 @@ def test_run_term_format(tmp_path) -> None:  # type: ignore[no-untyped-def]
     assert "saved" in result.output.lower()
 
 
+def test_run_with_concurrency_flag_matches_sequential(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    docs = tmp_path
+
+    seq = runner.invoke(
+        app, ["run", str(docs), "--config", project, "--format", "json", "--concurrency", "1"]
+    )
+    par = runner.invoke(
+        app, ["run", str(docs), "--config", project, "--format", "json", "--concurrency", "4"]
+    )
+    assert seq.exit_code == 0, seq.output
+    assert par.exit_code == 0, par.output
+    assert json.loads(seq.output) == json.loads(par.output)
+
+
+def test_run_rejects_concurrency_below_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    result = runner.invoke(app, ["run", str(tmp_path), "--config", project, "--concurrency", "0"])
+    assert result.exit_code == 2
+    assert "concurrency" in result.output.lower()
+
+
 def test_run_queue_and_review_and_override(tmp_path) -> None:  # type: ignore[no-untyped-def]
     # Force a needs_review by disabling escalation so contested -> needs_review.
     src = PROJECT_SRC.replace(
