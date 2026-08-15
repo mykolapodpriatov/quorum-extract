@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 
 from quorum_extract import (
     AgreementCalibrator,
@@ -475,3 +476,152 @@ def test_unknown_group_falls_back_to_global() -> None:
     # Both 'a' (ungrouped) and 'b' (unknown group) use the global model.
     assert fields["b"].confidence == fields["a"].confidence
     assert fields["b"].confidence is not None and fields["b"].confidence < 0.4
+
+
+# --------------------------------------------------------------------------- #
+# Corpus-level cheap-tier concurrency (doc_concurrency)
+# --------------------------------------------------------------------------- #
+
+
+def _sleepy_cheap(name: str, delay: float, outputs: dict) -> FakeExtractor:
+    """Cheap extractor that sleeps ``delay`` seconds, then returns canned output."""
+
+    def _fn(doc: object) -> dict:
+        time.sleep(delay)
+        did = FakeExtractor.doc_id(doc)
+        return dict(outputs[did])
+
+    return FakeExtractor(name, fn=_fn, cost_usd=0.001, tier=0)
+
+
+def test_doc_concurrency_faster_than_sequential() -> None:
+    # Four docs, one cheap extractor sleeping 50ms each. Sequential ~200ms;
+    # doc_concurrency=4 should collapse toward one sleep.
+    ids = ("d1", "d2", "d3", "d4")
+    canned = {d: {"a": "x", "b": 1, "c": 1.0} for d in ids}
+    delay = 0.05
+    docs = [Document(d, {"id": d}) for d in ids]
+    cfg = QuorumConfig(min_agreement=0.5)
+
+    seq_cheap = _sleepy_cheap("cheap-seq", delay, canned)
+    start = time.perf_counter()
+    seq = cascade_corpus(
+        docs, LEAVES, specs_from(seq_cheap), cfg, extract_fn=run_extractors, doc_concurrency=1
+    )
+    seq_elapsed = time.perf_counter() - start
+
+    par_cheap = _sleepy_cheap("cheap-par", delay, canned)
+    start = time.perf_counter()
+    par = cascade_corpus(
+        docs, LEAVES, specs_from(par_cheap), cfg, extract_fn=run_extractors, doc_concurrency=4
+    )
+    par_elapsed = time.perf_counter() - start
+
+    assert par_elapsed < seq_elapsed / 2
+    assert [r.doc_id for r in par.records] == [r.doc_id for r in seq.records] == list(ids)
+    assert [{p: (fr.value, fr.status) for p, fr in r.fields.items()} for r in par.records] == [
+        {p: (fr.value, fr.status) for p, fr in r.fields.items()} for r in seq.records
+    ]
+    assert par.budget.report() == seq.budget.report()
+
+
+def test_doc_concurrency_preserves_order_and_budget() -> None:
+    # Three contested docs (input order is not doc_id order). Budget allows one
+    # strong call. Parallel cheap extraction finishing out of order must not
+    # change escalation order or totals.
+    ids = ("d1", "d2", "d3")
+    a = FakeExtractor(
+        "cheap-a",
+        outputs={d: {"a": "x", "b": 1, "c": 1.0} for d in ids},
+        cost_usd=0.001,
+        tier=0,
+    )
+    b = FakeExtractor(
+        "cheap-b",
+        outputs={d: {"a": "x", "b": 99, "c": 1.0} for d in ids},
+        cost_usd=0.001,
+        tier=0,
+    )
+    strong = FakeExtractor(
+        "strong",
+        outputs={d: {"a": "x", "b": 1, "c": 1.0} for d in ids},
+        cost_usd=0.05,
+        tier=1,
+    )
+    cfg = QuorumConfig(min_agreement=0.75, escalate_tier=1, max_cost_usd=0.05)
+    docs = [
+        Document("d3", {"id": "d3"}),
+        Document("d1", {"id": "d1"}),
+        Document("d2", {"id": "d2"}),
+    ]
+
+    seq = cascade_corpus(
+        docs,
+        LEAVES,
+        specs_from(a, b),
+        cfg,
+        strong_spec=strong.to_spec(),
+        extract_fn=run_extractors,
+        doc_concurrency=1,
+    )
+    # Reset call tracking on the shared strong fake for the parallel pass.
+    strong.call_count = 0
+    strong.called_doc_ids = []
+    par = cascade_corpus(
+        docs,
+        LEAVES,
+        specs_from(a, b),
+        cfg,
+        strong_spec=strong.to_spec(),
+        extract_fn=run_extractors,
+        doc_concurrency=3,
+    )
+
+    assert [r.doc_id for r in par.records] == [r.doc_id for r in seq.records] == list(ids)
+    assert [r.model_dump() for r in par.records] == [r.model_dump() for r in seq.records]
+    assert par.budget.report() == seq.budget.report()
+    # Cap still fires on d1 first (sorted id), then d2/d3 go to review.
+    assert strong.called_doc_ids == ["d1"]
+    by_id = {r.doc_id: r for r in par.records}
+    assert by_id["d1"].fields["b"].status is EscalationStatus.ESCALATED_MODEL
+    assert by_id["d2"].fields["b"].status is EscalationStatus.NEEDS_REVIEW
+    assert by_id["d3"].fields["b"].status is EscalationStatus.NEEDS_REVIEW
+
+
+def test_doc_concurrency_budget_cap_ignores_completion_order() -> None:
+    # Cheap extraction of d3 finishes first (short sleep) and d1 last (long
+    # sleep). Escalation must still follow sorted doc_id, so d1 spends the
+    # single budgeted strong call.
+    delays = {"d1": 0.06, "d2": 0.03, "d3": 0.01}
+    canned_a = {d: {"a": "x", "b": 1, "c": 1.0} for d in delays}
+    canned_b = {d: {"a": "x", "b": 99, "c": 1.0} for d in delays}
+
+    def _sleepy(name: str, outputs: dict) -> FakeExtractor:
+        def _fn(doc: object) -> dict:
+            did = FakeExtractor.doc_id(doc)
+            time.sleep(delays[did])
+            return dict(outputs[did])
+
+        return FakeExtractor(name, fn=_fn, cost_usd=0.001, tier=0)
+
+    strong = FakeExtractor(
+        "strong",
+        outputs={d: {"a": "x", "b": 1, "c": 1.0} for d in delays},
+        cost_usd=0.05,
+        tier=1,
+    )
+    cfg = QuorumConfig(min_agreement=0.75, escalate_tier=1, max_cost_usd=0.05)
+    docs = [Document(d, {"id": d}) for d in ("d3", "d1", "d2")]
+    res = cascade_corpus(
+        docs,
+        LEAVES,
+        specs_from(_sleepy("cheap-a", canned_a), _sleepy("cheap-b", canned_b)),
+        cfg,
+        strong_spec=strong.to_spec(),
+        extract_fn=run_extractors,
+        doc_concurrency=3,
+    )
+    assert [r.doc_id for r in res.records] == ["d1", "d2", "d3"]
+    assert strong.called_doc_ids == ["d1"]
+    assert res.budget.report().docs_escalated == 1
+    assert res.budget.report().docs_over_budget == 2

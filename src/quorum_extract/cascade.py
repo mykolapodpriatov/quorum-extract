@@ -25,6 +25,7 @@ every record after the cascade.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from .agreement import features_for
@@ -211,6 +212,7 @@ def cascade_corpus(
     calibrator: AgreementCalibrator | None = None,
     calibration_groups: Mapping[str, str] | None = None,
     extract_fn: ExtractFn,
+    doc_concurrency: int = 1,
 ) -> CascadeResult:
     """Run the full cheap-vote -> calibrate -> escalate pipeline over a corpus.
 
@@ -229,20 +231,27 @@ def cascade_corpus(
             absent / under-trained.
         extract_fn: Callable that invokes specs against a document and returns
             outputs (failures captured as ``ok=False``). Injected for testability.
+        doc_concurrency: How many documents to cheap-extract in parallel.
+            Defaults to ``1`` -- fully sequential, matching prior behavior.
+            Only the cheap-tier ``extract_fn`` calls are fanned out; quorum,
+            calibration, budget charging, and escalation stay in the existing
+            ``doc_id``-sorted loop so the cap point is unchanged.
 
     Returns:
         A :class:`CascadeResult`. Every record satisfies the field-completeness
-        invariant (one :class:`FieldResult` per leaf path).
+        invariant (one :class:`FieldResult` per leaf path). Records are always
+        in ``doc_id`` order, regardless of extraction completion order.
     """
     strong_cost = strong_spec.cost_usd if strong_spec is not None else 0.0
     tracker = BudgetTracker(strong_cost_usd=strong_cost, max_cost_usd=config.max_cost_usd)
     groups: Mapping[str, str] = calibration_groups or {}
 
     ordered = sorted(docs, key=lambda d: d.doc_id)
+    cheap_by_doc = _extract_cheap(ordered, cheap_specs, extract_fn, doc_concurrency)
     records: list[RecordResult] = []
 
     for doc in ordered:
-        cheap_outputs = extract_fn(cheap_specs, doc.payload)
+        cheap_outputs = cheap_by_doc[doc.doc_id]
         cheap_cost = sum(o.spec.cost_usd for o in cheap_outputs)
         tracker.charge_cheap(doc.doc_id, cheap_cost)
 
@@ -282,6 +291,31 @@ def cascade_corpus(
         records.append(record)
 
     return CascadeResult(records=records, budget=tracker)
+
+
+def _extract_cheap(
+    ordered: Sequence[Document],
+    cheap_specs: Sequence[ExtractorSpec],
+    extract_fn: ExtractFn,
+    doc_concurrency: int,
+) -> dict[str, list[ExtractorOutput]]:
+    """Run cheap-tier extraction for every document, optionally in parallel.
+
+    When ``doc_concurrency > 1`` and there is more than one document, the
+    cheap-tier ``extract_fn`` calls fan out through a
+    :class:`~concurrent.futures.ThreadPoolExecutor`. Results are gathered
+    before the caller walks them in ``doc_id`` order, so budget accounting
+    never races. Default ``doc_concurrency=1`` (or a single document) stays
+    fully sequential and creates no thread pool.
+    """
+    if doc_concurrency <= 1 or len(ordered) <= 1:
+        return {doc.doc_id: extract_fn(cheap_specs, doc.payload) for doc in ordered}
+    workers = min(doc_concurrency, len(ordered))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            doc.doc_id: executor.submit(extract_fn, cheap_specs, doc.payload) for doc in ordered
+        }
+        return {doc_id: future.result() for doc_id, future in futures.items()}
 
 
 def _escalate_document(

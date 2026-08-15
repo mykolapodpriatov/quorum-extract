@@ -85,14 +85,26 @@ def run(
             help="Parallel extractor calls per document. Default 1 (sequential).",
         ),
     ] = 1,
+    doc_concurrency: Annotated[
+        int,
+        typer.Option(
+            "--doc-concurrency",
+            help="Parallel cheap-tier extraction across documents. Default 1 (sequential).",
+        ),
+    ] = 1,
 ) -> None:
     """Extract + reconcile + cascade a corpus; print the cost report."""
     if concurrency < 1:
         _err.print("[red]--concurrency must be >= 1[/red]")
         raise typer.Exit(code=2)
+    if doc_concurrency < 1:
+        _err.print("[red]--doc-concurrency must be >= 1[/red]")
+        raise typer.Exit(code=2)
     cfg = load_config(config)
     documents = _load_documents(docs, cfg)
-    run_report, records = run_project(cfg, documents, concurrency=concurrency)
+    run_report, records = run_project(
+        cfg, documents, concurrency=concurrency, doc_concurrency=doc_concurrency
+    )
 
     if out is not None:
         write_results(out, records)

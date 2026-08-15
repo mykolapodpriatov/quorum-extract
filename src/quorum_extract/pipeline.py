@@ -52,6 +52,7 @@ def run_project(
     *,
     calibrator: AgreementCalibrator | None = None,
     concurrency: int = 1,
+    doc_concurrency: int = 1,
 ) -> tuple[RunReport, list[RecordResult]]:
     """Execute the full pipeline for a corpus.
 
@@ -65,6 +66,9 @@ def run_project(
             Defaults to ``1`` -- fully sequential, matching prior behavior.
             Document order and per-document budget accounting are unaffected;
             only the K extractor calls *within* a document are parallelized.
+        doc_concurrency: How many documents to cheap-extract in parallel
+            (see :func:`~quorum_extract.cascade.cascade_corpus`). Defaults to
+            ``1``. Quorum, escalation, and budget charging stay sequential.
 
     Returns:
         ``(report, records)`` where ``report`` aggregates counts + budget and
@@ -85,6 +89,7 @@ def run_project(
         calibrator=calibrator,
         calibration_groups=config.calibration_groups,
         extract_fn=_extract_fn,
+        doc_concurrency=doc_concurrency,
     )
 
     n_accepted = n_escalated = n_review = n_resolved = 0
