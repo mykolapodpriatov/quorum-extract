@@ -16,9 +16,11 @@ target a field that does not exist on a record.
 
 from __future__ import annotations
 
+import csv
 import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +87,49 @@ class ReviewQueue:
             for line in self.path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+
+
+_QUEUE_COLUMNS = ("doc_id", "path", "candidates")
+
+
+def _candidates_cell(candidates: Sequence[Any]) -> str:
+    """Join candidate values for a CSV/MD cell (JSON keeps the list)."""
+    return "; ".join(str(c) for c in candidates)
+
+
+def render_queue(items: Sequence[ReviewItem], fmt: str) -> str:
+    """Render an unresolved review queue as ``csv``, ``json``, or ``md``.
+
+    An empty queue is still a valid export: a header-only CSV, ``[]`` JSON, or
+    a header-only Markdown table. ``ReviewItem`` only stores ``doc_id``,
+    ``path``, and ``candidates`` -- there is no confidence/disagreement field
+    to include.
+    """
+    if fmt == "csv":
+        buf = StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_QUEUE_COLUMNS)
+        for item in items:
+            writer.writerow([item.doc_id, item.path, _candidates_cell(item.candidates)])
+        return buf.getvalue()
+    if fmt == "json":
+        payload = [
+            {"doc_id": item.doc_id, "path": item.path, "candidates": list(item.candidates)}
+            for item in items
+        ]
+        return json.dumps(payload, indent=2) + "\n"
+    if fmt == "md":
+        lines = [
+            "# Review queue",
+            "",
+            "| doc_id | path | candidates |",
+            "| --- | --- | --- |",
+        ]
+        for item in items:
+            lines.append(f"| {item.doc_id} | `{item.path}` | {_candidates_cell(item.candidates)} |")
+        lines.append("")
+        return "\n".join(lines)
+    raise ValueError(f"unknown review export format: {fmt!r} (use csv|json|md)")
 
 
 def items_for_review(records: Sequence[RecordResult]) -> list[ReviewItem]:

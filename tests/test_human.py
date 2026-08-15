@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from quorum_extract import (
     EscalationStatus,
     FieldResult,
@@ -14,7 +18,7 @@ from quorum_extract import (
     items_for_review,
     load_overrides,
 )
-from quorum_extract.human import write_override
+from quorum_extract.human import render_queue, write_override
 
 
 def make_record(doc_id: str, status: EscalationStatus, value: object = None) -> RecordResult:
@@ -106,3 +110,34 @@ def test_review_item_json_roundtrip() -> None:
 def test_override_json_roundtrip() -> None:
     ov = Override(doc_id="d1", path="vendor", value=42)
     assert Override.from_json(ov.to_json()) == ov
+
+
+def test_render_queue_csv_json_md_and_empty() -> None:
+    items = [
+        ReviewItem(doc_id="d1", path="currency", candidates=["USD", "EUR"]),
+        ReviewItem(doc_id="d2", path="total", candidates=[100, 200]),
+    ]
+    csv_text = render_queue(items, "csv")
+    assert csv_text.startswith("doc_id,path,candidates")
+    assert "d1,currency,USD; EUR" in csv_text
+    assert "d2,total,100; 200" in csv_text
+
+    payload = json.loads(render_queue(items, "json"))
+    assert payload == [
+        {"doc_id": "d1", "path": "currency", "candidates": ["USD", "EUR"]},
+        {"doc_id": "d2", "path": "total", "candidates": [100, 200]},
+    ]
+
+    md = render_queue(items, "md")
+    assert md.startswith("# Review queue")
+    assert "d1" in md and "currency" in md
+
+    empty_csv = render_queue([], "csv")
+    assert empty_csv.startswith("doc_id,path,candidates")
+    assert empty_csv.strip() == "doc_id,path,candidates"
+    assert json.loads(render_queue([], "json")) == []
+
+
+def test_render_queue_unknown_format_raises() -> None:
+    with pytest.raises(ValueError, match="unknown review export format"):
+        render_queue([], "xml")
