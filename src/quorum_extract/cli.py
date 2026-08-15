@@ -30,6 +30,7 @@ from .human import (
     apply_overrides,
     items_for_review,
     load_overrides,
+    render_queue,
     write_override,
 )
 from .pipeline import run_project
@@ -225,6 +226,17 @@ def report(
         typer.echo(rendered)
 
 
+def _export_format(path: Path, fmt: str | None) -> str:
+    """Resolve a review-export format from ``--format`` or the file suffix."""
+    if fmt:
+        return fmt
+    suffix = path.suffix.lower()
+    inferred = {".csv": "csv", ".json": "json", ".md": "md"}.get(suffix)
+    if inferred is None:
+        raise ValueError(f"cannot infer format from {path.name!r}; use --format csv|json|md")
+    return inferred
+
+
 def _parse_resolve(spec: str) -> Override:
     """Parse a ``"doc_id:path=value"`` resolution spec into an :class:`Override`.
 
@@ -288,8 +300,22 @@ def review(
             help='Non-interactive: record "doc_id:path=value" and exit (repeatable).',
         ),
     ] = None,
+    export: Annotated[
+        Path | None,
+        typer.Option(
+            "--export",
+            help="Write the unresolved queue here (csv/json/md). Implies --list.",
+        ),
+    ] = None,
+    fmt: Annotated[
+        str | None,
+        typer.Option("--format", "-f", help="csv|json|md (inferred from --export suffix)."),
+    ] = None,
 ) -> None:
     """Work the human-review queue; resolutions append to an overrides file."""
+    if export is not None and resolve:
+        _err.print("[red]--export and --resolve cannot be used together[/red]")
+        raise typer.Exit(code=2)
     if resolve:
         try:
             parsed = [_parse_resolve(spec) for spec in resolve]
@@ -299,6 +325,16 @@ def review(
         for override in parsed:
             write_override(overrides, override)
         _out.print(f"[green]Recorded {len(parsed)} override(s)[/green] -> {overrides}")
+        return
+    if export is not None:
+        items = ReviewQueue(queue).load()
+        try:
+            rendered = render_queue(items, _export_format(export, fmt))
+        except ValueError as exc:
+            _err.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=2) from exc
+        export.write_text(rendered, encoding="utf-8")
+        _out.print(f"[green]Exported {len(items)} item(s)[/green] -> {export}")
         return
     rq = ReviewQueue(queue)
     items = rq.load()

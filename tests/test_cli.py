@@ -365,6 +365,95 @@ def test_review_empty_queue(tmp_path) -> None:  # type: ignore[no-untyped-def]
     assert "empty" in res.output.lower()
 
 
+def _write_queue(tmp_path):  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"
+    queue.write_text(
+        json.dumps({"doc_id": "d1", "path": "currency", "candidates": ["USD", "EUR"]})
+        + "\n"
+        + json.dumps({"doc_id": "d2", "path": "total", "candidates": [100, 200]})
+        + "\n",
+        encoding="utf-8",
+    )
+    return queue
+
+
+def test_review_export_two_item_queue_csv(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = _write_queue(tmp_path)
+    dest = tmp_path / "queue.csv"
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app, ["review", str(queue), "--export", str(dest), "--overrides", str(overrides)]
+    )
+    assert res.exit_code == 0, res.output
+    text = dest.read_text(encoding="utf-8")
+    assert text.startswith("doc_id,path,candidates")
+    assert "d1,currency,USD; EUR" in text
+    assert "d2,total,100; 200" in text
+    assert not overrides.exists()
+
+
+def test_review_export_two_item_queue_json(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = _write_queue(tmp_path)
+    dest = tmp_path / "queue.json"
+    res = runner.invoke(app, ["review", str(queue), "--export", str(dest)])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(dest.read_text(encoding="utf-8"))
+    assert payload == [
+        {"doc_id": "d1", "path": "currency", "candidates": ["USD", "EUR"]},
+        {"doc_id": "d2", "path": "total", "candidates": [100, 200]},
+    ]
+
+
+def test_review_export_empty_queue_header_only(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = tmp_path / "queue.jsonl"
+    queue.write_text("", encoding="utf-8")
+    dest = tmp_path / "empty.csv"
+    res = runner.invoke(app, ["review", str(queue), "--export", str(dest)])
+    assert res.exit_code == 0, res.output
+    assert dest.read_text(encoding="utf-8").strip() == "doc_id,path,candidates"
+
+    dest_json = tmp_path / "empty.json"
+    res_json = runner.invoke(app, ["review", str(queue), "--export", str(dest_json)])
+    assert res_json.exit_code == 0, res_json.output
+    assert json.loads(dest_json.read_text(encoding="utf-8")) == []
+
+
+def test_review_export_and_resolve_conflict(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = _write_queue(tmp_path)
+    dest = tmp_path / "queue.csv"
+    overrides = tmp_path / "overrides.jsonl"
+    res = runner.invoke(
+        app,
+        [
+            "review",
+            str(queue),
+            "--export",
+            str(dest),
+            "--resolve",
+            "d1:currency=USD",
+            "--overrides",
+            str(overrides),
+        ],
+    )
+    assert res.exit_code == 2
+    assert "--export" in res.output and "--resolve" in res.output
+    assert not dest.exists()
+    assert not overrides.exists()
+
+
+def test_review_export_format_override_and_unknown(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    queue = _write_queue(tmp_path)
+    dest = tmp_path / "queue.txt"
+    res = runner.invoke(app, ["review", str(queue), "--export", str(dest), "--format", "json"])
+    assert res.exit_code == 0, res.output
+    assert isinstance(json.loads(dest.read_text(encoding="utf-8")), list)
+
+    dest2 = tmp_path / "queue.txt"
+    bad = runner.invoke(app, ["review", str(queue), "--export", str(dest2)])
+    assert bad.exit_code == 2
+    assert "cannot infer format" in bad.output.lower()
+
+
 def test_no_args_shows_help() -> None:
     res = runner.invoke(app, [])
     assert res.exit_code in (0, 2)
