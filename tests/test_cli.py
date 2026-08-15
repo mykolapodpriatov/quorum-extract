@@ -170,6 +170,33 @@ def test_run_rejects_concurrency_below_one(tmp_path) -> None:  # type: ignore[no
     assert "concurrency" in result.output.lower()
 
 
+def test_run_with_doc_concurrency_flag_matches_sequential(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    docs = tmp_path
+
+    seq = runner.invoke(
+        app, ["run", str(docs), "--config", project, "--format", "json", "--doc-concurrency", "1"]
+    )
+    par = runner.invoke(
+        app, ["run", str(docs), "--config", project, "--format", "json", "--doc-concurrency", "4"]
+    )
+    assert seq.exit_code == 0, seq.output
+    assert par.exit_code == 0, par.output
+    seq_payload = json.loads(seq.output)
+    par_payload = json.loads(par.output)
+    assert par_payload == seq_payload
+    assert [r["doc_id"] for r in par_payload["records"]] == ["d1", "d2"]
+
+
+def test_run_rejects_doc_concurrency_below_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    result = runner.invoke(
+        app, ["run", str(tmp_path), "--config", project, "--doc-concurrency", "0"]
+    )
+    assert result.exit_code == 2
+    assert "doc-concurrency" in result.output.lower()
+
+
 def test_run_queue_and_review_and_override(tmp_path) -> None:  # type: ignore[no-untyped-def]
     # Force a needs_review by disabling escalation so contested -> needs_review.
     src = PROJECT_SRC.replace(

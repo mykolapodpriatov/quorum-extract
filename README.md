@@ -98,6 +98,7 @@ for path, fr in sorted(result.records[0].fields.items()):
 ```bash
 quorum-extract run docs/ --config project.py --out results.jsonl   # extract + reconcile + cascade
 quorum-extract run docs/ --config project.py --concurrency 8       # parallelize provider calls per doc
+quorum-extract run docs/ --config project.py --doc-concurrency 8   # parallelize cheap extraction across docs
 quorum-extract calibrate --labeled labels.jsonl --method isotonic --out calibrator.json
 quorum-extract report results.jsonl --format md                    # annotated output + diagnostics
 quorum-extract review queue.jsonl --list                           # work the human queue
