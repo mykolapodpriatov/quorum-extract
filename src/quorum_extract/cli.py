@@ -22,7 +22,7 @@ from .calibration import (
     fingerprint_for,
 )
 from .cascade import Document
-from .config import load_config, read_labeled, read_results, write_results
+from .config import load_config, merge_results, read_labeled, read_results, write_results
 from .diagnostics import suggest_labels
 from .human import (
     Override,
@@ -66,6 +66,31 @@ def _load_documents(docs_path: Path, config: object) -> list[Document]:
     return docs
 
 
+def _select_documents(documents: list[Document], doc_ids: list[str]) -> list[Document]:
+    """Restrict ``documents`` to ``--doc`` ids (first-seen order).
+
+    Raises:
+        typer.Exit: exit 2 if any requested id is not in the loaded corpus.
+    """
+    available = {doc.doc_id: doc for doc in documents}
+    unknown: list[str] = []
+    seen_unknown: set[str] = set()
+    for doc_id in doc_ids:
+        if doc_id not in available and doc_id not in seen_unknown:
+            seen_unknown.add(doc_id)
+            unknown.append(doc_id)
+    if unknown:
+        _err.print(f"[red]unknown --doc id(s): {', '.join(unknown)}[/red]")
+        raise typer.Exit(code=2)
+    selected: list[Document] = []
+    seen: set[str] = set()
+    for doc_id in doc_ids:
+        if doc_id not in seen:
+            seen.add(doc_id)
+            selected.append(available[doc_id])
+    return selected
+
+
 @app.command()
 def run(
     docs: Annotated[Path, typer.Argument(help="Documents directory or file.")],
@@ -92,6 +117,13 @@ def run(
             help="Parallel cheap-tier extraction across documents. Default 1 (sequential).",
         ),
     ] = 1,
+    doc: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--doc",
+            help="Extract only this document id (repeatable). Merges --out by doc_id.",
+        ),
+    ] = None,
 ) -> None:
     """Extract + reconcile + cascade a corpus; print the cost report."""
     if concurrency < 1:
@@ -102,12 +134,17 @@ def run(
         raise typer.Exit(code=2)
     cfg = load_config(config)
     documents = _load_documents(docs, cfg)
+    if doc:
+        documents = _select_documents(documents, doc)
     run_report, records = run_project(
         cfg, documents, concurrency=concurrency, doc_concurrency=doc_concurrency
     )
 
     if out is not None:
-        write_results(out, records)
+        if doc and out.exists():
+            merge_results(out, records)
+        else:
+            write_results(out, records)
     if queue is not None:
         items = items_for_review(records)
         if items:

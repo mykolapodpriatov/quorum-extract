@@ -409,6 +409,111 @@ def test_run_text_directory_fallback(tmp_path) -> None:  # type: ignore[no-untyp
     assert ids == {"a", "b"}  # only .txt/.md, by stem
 
 
+def _text_dir_project(tmp_path):  # type: ignore[no-untyped-def]
+    project = tmp_path / "project.py"
+    project.write_text(TEXTDIR_PROJECT, encoding="utf-8")
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "a.txt").write_text("one two three", encoding="utf-8")
+    (docs_dir / "b.md").write_text("hello world", encoding="utf-8")
+    return str(project), docs_dir
+
+
+def test_run_doc_selects_one_of_two_fixtures(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project, docs_dir = _text_dir_project(tmp_path)
+    res = runner.invoke(
+        app, ["run", str(docs_dir), "--config", project, "--format", "json", "--doc", "a"]
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.output)
+    assert [r["doc_id"] for r in payload["records"]] == ["a"]
+    assert payload["budget"]["docs_total"] == 1
+
+
+def test_run_doc_missing_exits_2(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project, docs_dir = _text_dir_project(tmp_path)
+    res = runner.invoke(
+        app,
+        ["run", str(docs_dir), "--config", project, "--format", "json", "--doc", "missing"],
+    )
+    assert res.exit_code == 2
+    assert "unknown --doc" in res.output.lower()
+    assert "missing" in res.output
+
+
+def test_run_without_doc_flag_unchanged(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project, docs_dir = _text_dir_project(tmp_path)
+    res = runner.invoke(app, ["run", str(docs_dir), "--config", project, "--format", "json"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.output)
+    assert {r["doc_id"] for r in payload["records"]} == {"a", "b"}
+    assert payload["budget"]["docs_total"] == 2
+
+
+def test_run_doc_merges_existing_out_by_doc_id(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    project = write_project(tmp_path)
+    out = tmp_path / "results.jsonl"
+    full = runner.invoke(
+        app, ["run", str(tmp_path), "--config", project, "--out", str(out), "--format", "json"]
+    )
+    assert full.exit_code == 0, full.output
+    before = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    assert {r["doc_id"] for r in before} == {"d1", "d2"}
+
+    subset = runner.invoke(
+        app,
+        [
+            "run",
+            str(tmp_path),
+            "--config",
+            project,
+            "--out",
+            str(out),
+            "--doc",
+            "d1",
+            "--format",
+            "json",
+        ],
+    )
+    assert subset.exit_code == 0, subset.output
+    payload = json.loads(subset.output)
+    assert [r["doc_id"] for r in payload["records"]] == ["d1"]
+    assert payload["budget"]["docs_total"] == 1
+
+    after = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    assert [r["doc_id"] for r in after] == ["d1", "d2"]
+
+
+def test_run_doc_queue_only_selected(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    src = PROJECT_SRC.replace(
+        'QuorumConfig(min_agreement=0.66, escalate_tier=1, escalation_merge="strong_wins")',
+        "QuorumConfig(min_agreement=0.66)",
+    )
+    project = tmp_path / "project.py"
+    project.write_text(src, encoding="utf-8")
+    queue = tmp_path / "queue.jsonl"
+    res = runner.invoke(
+        app,
+        [
+            "run",
+            str(tmp_path),
+            "--config",
+            str(project),
+            "--doc",
+            "d2",
+            "--queue",
+            str(queue),
+            "--format",
+            "json",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.output)
+    assert [r["doc_id"] for r in payload["records"]] == ["d2"]
+    # d2 is unanimous; queue should stay empty (d1 would have been queued).
+    assert not queue.exists() or queue.read_text(encoding="utf-8").strip() == ""
+
+
 def test_run_no_documents_errors(tmp_path) -> None:  # type: ignore[no-untyped-def]
     project = tmp_path / "project.py"
     project.write_text(TEXTDIR_PROJECT, encoding="utf-8")
