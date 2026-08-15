@@ -179,10 +179,25 @@ def record_from_dict(d: dict[str, Any]) -> RecordResult:
 
 
 def write_results(path: str | Path, records: Iterable[RecordResult]) -> None:
-    """Write records to a JSONL file (one record per line)."""
+    """Write records to a JSONL file (one record per line). Overwrites ``path``."""
     with Path(path).open("w", encoding="utf-8") as fh:
         for record in records:
             fh.write(json.dumps(record_to_dict(record)) + "\n")
+
+
+def merge_results(path: str | Path, records: Iterable[RecordResult]) -> None:
+    """Merge ``records`` into an existing JSONL by ``doc_id``.
+
+    Records already in the file whose ``doc_id`` is not in ``records`` are
+    kept. Incoming records replace any existing row with the same id and are
+    appended when new. The written file is sorted by ``doc_id``. Creates the
+    file if it does not exist.
+    """
+    dest = Path(path)
+    existing = read_results(dest) if dest.exists() else []
+    by_id = {record.doc_id: record for record in existing}
+    by_id.update({record.doc_id: record for record in records})
+    write_results(dest, [by_id[key] for key in sorted(by_id)])
 
 
 def read_results(path: str | Path) -> list[RecordResult]:

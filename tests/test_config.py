@@ -14,7 +14,7 @@ from quorum_extract import (
     read_results,
     write_results,
 )
-from quorum_extract.config import read_labeled, record_from_dict, record_to_dict
+from quorum_extract.config import merge_results, read_labeled, record_from_dict, record_to_dict
 
 from ._helpers import Flat, make_spec
 
@@ -152,6 +152,38 @@ def test_write_read_results_jsonl(tmp_path) -> None:  # type: ignore[no-untyped-
     loaded = read_results(path)
     assert len(loaded) == 2
     assert loaded[0].fields["a"].value == "x"
+
+
+def _record(doc_id: str, value: str, cost: float = 0.01) -> RecordResult:
+    fr = FieldResult(
+        path="a",
+        value=value,
+        votes=[FieldVote(extractor="e1", raw_value=value, normalized_key=f"str:{value}")],
+        agreement=1.0,
+        status=EscalationStatus.ACCEPTED,
+        winning_key=f"str:{value}",
+    )
+    return RecordResult(doc_id=doc_id, fields={"a": fr}, cost_usd=cost)
+
+
+def test_merge_results_replaces_by_doc_id_and_keeps_others(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "results.jsonl"
+    write_results(path, [_record("d1", "old"), _record("d2", "keep")])
+    merge_results(path, [_record("d1", "new", cost=0.02), _record("d3", "added")])
+    loaded = read_results(path)
+    assert [r.doc_id for r in loaded] == ["d1", "d2", "d3"]
+    assert loaded[0].fields["a"].value == "new"
+    assert loaded[0].cost_usd == 0.02
+    assert loaded[1].fields["a"].value == "keep"
+    assert loaded[2].fields["a"].value == "added"
+
+
+def test_merge_results_creates_file_when_absent(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "results.jsonl"
+    merge_results(path, [_record("d1", "only")])
+    loaded = read_results(path)
+    assert [r.doc_id for r in loaded] == ["d1"]
+    assert loaded[0].fields["a"].value == "only"
 
 
 def test_read_labeled_parses_rows(tmp_path) -> None:  # type: ignore[no-untyped-def]
