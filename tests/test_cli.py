@@ -645,3 +645,223 @@ def test_calibrate_invalid_labeled_row(tmp_path) -> None:  # type: ignore[no-unt
     res = runner.invoke(app, ["calibrate", "--labeled", str(labeled), "--out", str(out)])
     assert res.exit_code == 2
     assert "invalid labeled set" in res.output.lower()
+
+
+# --------------------------------------------------------------------------- #
+# active-learning loop: merge-labels + calibrate --holdout/--baseline
+# --------------------------------------------------------------------------- #
+
+
+def _write_labels(path, rows) -> None:  # type: ignore[no-untyped-def]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+
+def _label_rows(n_per_share: int, seed: int, *, doc_prefix: str = "d"):  # type: ignore[no-untyped-def]
+    import random
+
+    rng = random.Random(seed)
+    rows = []
+    index = 0
+    for share in (0.25, 0.4, 0.55, 0.7, 0.85, 1.0):
+        for _ in range(n_per_share):
+            rows.append(
+                {
+                    "winning_share": share,
+                    "k": 4,
+                    "entropy": 0.0,
+                    "correct": rng.random() < share,
+                    "doc_id": f"{doc_prefix}{index}",
+                    "path": "total",
+                }
+            )
+            index += 1
+    return rows
+
+
+def test_merge_labels_replaces_and_appends(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    base = tmp_path / "base.jsonl"
+    new = tmp_path / "new.jsonl"
+    out = tmp_path / "merged.jsonl"
+    _write_labels(
+        base,
+        [
+            {"winning_share": 0.5, "k": 4, "correct": True, "doc_id": "d1", "path": "total"},
+            {"winning_share": 0.9, "k": 4, "correct": True, "doc_id": "d2", "path": "total"},
+        ],
+    )
+    _write_labels(
+        new,
+        [
+            # A correction for d1, and a genuinely new row.
+            {"winning_share": 0.5, "k": 4, "correct": False, "doc_id": "d1", "path": "total"},
+            {"winning_share": 0.3, "k": 4, "correct": False, "doc_id": "d3", "path": "total"},
+        ],
+    )
+
+    res = runner.invoke(app, ["merge-labels", str(base), str(new), "--out", str(out)])
+
+    assert res.exit_code == 0, res.output
+    merged = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    assert [(r["doc_id"], r["correct"]) for r in merged] == [
+        ("d1", False),
+        ("d2", True),
+        ("d3", False),
+    ]
+    assert "1 replaced" in res.output
+
+
+def test_merge_labels_rejects_an_invalid_row(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    base = tmp_path / "base.jsonl"
+    new = tmp_path / "new.jsonl"
+    _write_labels(base, [{"winning_share": 0.5, "k": 4, "correct": True}])
+    new.write_text('{"k": 4}\n', encoding="utf-8")
+
+    res = runner.invoke(
+        app, ["merge-labels", str(base), str(new), "--out", str(tmp_path / "o.jsonl")]
+    )
+
+    assert res.exit_code == 2
+    assert "invalid labeled set" in res.output.lower()
+
+
+def test_calibrate_without_holdout_says_so(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    labeled = tmp_path / "labels.jsonl"
+    _write_labels(labeled, _label_rows(40, seed=0))
+
+    res = runner.invoke(
+        app, ["calibrate", "--labeled", str(labeled), "--out", str(tmp_path / "cal.json")]
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "--holdout" in res.output
+
+
+def test_calibrate_reports_a_held_out_score(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    labeled = tmp_path / "labels.jsonl"
+    _write_labels(labeled, _label_rows(40, seed=1))
+
+    res = runner.invoke(
+        app,
+        [
+            "calibrate",
+            "--labeled",
+            str(labeled),
+            "--out",
+            str(tmp_path / "cal.json"),
+            "--holdout",
+            "0.25",
+            "--seed",
+            "3",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "brier=" in res.output
+    assert "ece=" in res.output
+    # The fit used the training half only, not all 240 rows.
+    assert "on 180 examples" in res.output
+
+
+def test_calibrate_holdout_is_reproducible(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    labeled = tmp_path / "labels.jsonl"
+    _write_labels(labeled, _label_rows(40, seed=2))
+    args = [
+        "calibrate",
+        "--labeled",
+        str(labeled),
+        "--out",
+        str(tmp_path / "cal.json"),
+        "--holdout",
+        "0.25",
+        "--seed",
+        "9",
+    ]
+
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+
+    assert first.exit_code == second.exit_code == 0
+    assert first.output == second.output
+
+
+def test_calibrate_rejects_a_holdout_that_empties_a_side(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    labeled = tmp_path / "labels.jsonl"
+    _write_labels(labeled, _label_rows(40, seed=4))
+
+    res = runner.invoke(
+        app,
+        [
+            "calibrate",
+            "--labeled",
+            str(labeled),
+            "--out",
+            str(tmp_path / "cal.json"),
+            "--holdout",
+            "1.5",
+        ],
+    )
+
+    assert res.exit_code == 2
+    assert "bad holdout" in res.output.lower()
+
+
+def test_calibrate_compares_against_a_baseline(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The one thing a user wants after labelling another batch: did it help?"""
+    thin = tmp_path / "thin.jsonl"
+    full = tmp_path / "full.jsonl"
+    _write_labels(thin, _label_rows(10, seed=5))
+    _write_labels(full, _label_rows(60, seed=5))
+
+    baseline_cal = tmp_path / "baseline.json"
+    first = runner.invoke(
+        app,
+        ["calibrate", "--labeled", str(thin), "--out", str(baseline_cal), "--min-examples", "20"],
+    )
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(
+        app,
+        [
+            "calibrate",
+            "--labeled",
+            str(full),
+            "--out",
+            str(tmp_path / "cal.json"),
+            "--holdout",
+            "0.25",
+            "--seed",
+            "1",
+            "--baseline",
+            str(baseline_cal),
+        ],
+    )
+
+    assert second.exit_code == 0, second.output
+    assert "Baseline on the same holdout" in second.output
+    assert "Calibration" in second.output
+    assert "brier " in second.output
+
+
+def test_calibrate_rejects_an_unreadable_baseline(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    labeled = tmp_path / "labels.jsonl"
+    _write_labels(labeled, _label_rows(40, seed=6))
+    bogus = tmp_path / "bogus.json"
+    bogus.write_text("{}", encoding="utf-8")
+
+    res = runner.invoke(
+        app,
+        [
+            "calibrate",
+            "--labeled",
+            str(labeled),
+            "--out",
+            str(tmp_path / "cal.json"),
+            "--holdout",
+            "0.25",
+            "--baseline",
+            str(bogus),
+        ],
+    )
+
+    assert res.exit_code == 2
+    assert "baseline" in res.output.lower()

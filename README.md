@@ -102,6 +102,8 @@ quorum-extract run docs/ --config project.py --doc-concurrency 8   # parallelize
 quorum-extract calibrate --labeled labels.jsonl --method isotonic --out calibrator.json
 quorum-extract report results.jsonl --format md                    # annotated output + diagnostics
 quorum-extract review queue.jsonl --list                           # work the human queue
+quorum-extract suggest-labels results.jsonl --n 20                 # what to label next
+quorum-extract merge-labels labels.jsonl new.jsonl --out labels.jsonl
 ```
 
 A project config is a Python module exposing a `config = ProjectConfig(...)` (extractors are arbitrary callables, so config is code, not a static file). See `examples/invoice_project.py`.
@@ -117,6 +119,40 @@ A project config is a Python module exposing a `config = ProjectConfig(...)` (ex
 ## Calibration & leakage
 
 A calibrator is fit on a small labeled set and is **not transferable by default**: it is fingerprinted to the schema, the extractor set, and the labeled-set file hash, and a mismatch on load warns. The labeled set **must** come from documents *not* in the run you score — high agreement is not certainty when a corpus has correlated errors, and the guards/tests enforce that confidence never spuriously approaches 1.
+
+## The active-learning loop
+
+A calibrator is only as good as the labelled set behind it, and labelling is the expensive part. The loop closes so you can tell whether the last batch was worth it:
+
+```bash
+# 1. Which rows would teach the calibrator the most? (nearest the accept boundary)
+quorum-extract suggest-labels results.jsonl --n 20 > todo.jsonl
+
+# 2. ...you label them, producing new-labels.jsonl...
+
+# 3. Fold them in. Deduplicated on (doc_id, path); a re-labelled row REPLACES
+#    the old one, because a correction is the reason anyone relabels.
+quorum-extract merge-labels labels.jsonl new-labels.jsonl --out labels.jsonl
+
+# 4. Refit, and find out whether it helped.
+quorum-extract calibrate --labeled labels.jsonl --out calibrator.json \
+  --holdout 0.25 --seed 0 --baseline previous-calibrator.json
+```
+
+Step 4 prints:
+
+```
+Fitted isotonic calibrator on 180 examples -> calibrator.json
+Held-out (60 examples): brier=0.1720 ece=0.0641 (lower is better)
+Baseline on the same holdout: brier=0.1988 ece=0.0912
+Calibration improved: brier -0.0268, ece -0.0271
+```
+
+Two rules make that number mean something. The score is always computed on rows the calibrator was **not** fit on, because fitting and scoring on the same labels always looks good. And the baseline is scored on **that same holdout**, so the comparison is like for like rather than two numbers from two different splits.
+
+Brier score is mean squared error between the predicted probability and the outcome; it punishes a confident wrong answer harder than an unsure one. Expected calibration error is the weighted gap between predicted confidence and observed accuracy, which is what answers "when this says 0.9, is it right 90% of the time?". A model can have a decent Brier score and still be systematically overconfident, so both are reported.
+
+`--holdout` defaults to 0, which fits on everything and reports no score, so existing invocations behave exactly as before. The split is seeded and the metrics are closed-form, so two runs over the same labels give the same answer.
 
 ## Tech stack
 
@@ -144,7 +180,7 @@ The full pipeline — voting, calibration, cascade, budget — is deterministic 
 - [x] Agreement-to-confidence calibration (isotonic / Platt)
 - [x] Cost-aware escalation cascade + budget report
 - [x] Human-review queue + corpus diagnostics
-- [ ] Active-learning loop to grow the calibration set
+- [x] Active-learning loop to grow the calibration set (`suggest-labels` -> `merge-labels` -> `calibrate --holdout --baseline`)
 - [x] Per-field reliability dashboard export (`diagnose` — CSV/MD/JSON)
 
 ## License

@@ -15,6 +15,9 @@ Public API (stable surface):
 * Quorum: :func:`quorum_record`, :func:`quorum_field`, :class:`ExtractorOutput`.
 * Calibration: :class:`AgreementCalibrator`, :class:`LabeledExample`,
   :class:`CalibrationError`, :class:`AgreementFeatures`.
+* Active learning: :func:`merge_labeled`, :func:`split_labeled`,
+  :func:`evaluate_calibrator`, :class:`CalibrationScores`, :func:`brier_score`,
+  :func:`expected_calibration_error`.
 * Cascade/budget: :func:`cascade_corpus`, :class:`Document`, :class:`BudgetTracker`.
 * Extractors: :class:`FakeExtractor`, :func:`run_extractors`,
   provider helpers (``openai_extractor`` / ``anthropic_extractor`` /
@@ -25,6 +28,14 @@ Public API (stable surface):
 
 from __future__ import annotations
 
+from .active import (
+    CalibrationScores,
+    brier_score,
+    evaluate_calibrator,
+    expected_calibration_error,
+    merge_labeled,
+    split_labeled,
+)
 from .agreement import AgreementFeatures, features_for
 from .budget import BudgetTracker
 from .calibration import (
@@ -84,6 +95,7 @@ __all__ = [
     "BudgetReport",
     "BudgetTracker",
     "CalibrationError",
+    "CalibrationScores",
     "CascadeResult",
     "Document",
     "EscalationStatus",
@@ -111,7 +123,10 @@ __all__ = [
     "__version__",
     "anthropic_extractor",
     "apply_overrides",
+    "brier_score",
     "cascade_corpus",
+    "evaluate_calibrator",
+    "expected_calibration_error",
     "features_for",
     "field_contention",
     "fingerprint_for",
@@ -121,6 +136,7 @@ __all__ = [
     "leaf_paths",
     "load_config",
     "load_overrides",
+    "merge_labeled",
     "normalize_value",
     "ollama_extractor",
     "openai_extractor",
@@ -129,6 +145,7 @@ __all__ = [
     "read_results",
     "run_extractors",
     "run_project",
+    "split_labeled",
     "suggest_labels",
     "systematically_contested",
     "write_results",
