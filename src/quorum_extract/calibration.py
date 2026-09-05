@@ -65,11 +65,19 @@ class LabeledExample:
 
     ``group`` selects an optional per-group calibrator; ``None`` uses the global
     one.
+
+    ``doc_id`` and ``path`` identify which reconciled field the row came from.
+    They are optional because a labelled set can be assembled by hand, but they
+    are what lets a re-labelled row REPLACE its older version when two sets are
+    merged (see :func:`quorum_extract.active.merge_labeled`). ``suggest-labels``
+    emits both, so a set built from its output is always identifiable.
     """
 
     features: AgreementFeatures
     correct: bool
     group: str | None = None
+    doc_id: str | None = None
+    path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

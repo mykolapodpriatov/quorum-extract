@@ -16,13 +16,22 @@ import typer
 from rich.console import Console
 
 from . import report as report_mod
+from .active import evaluate_calibrator, merge_labeled, split_labeled
 from .calibration import (
     AgreementCalibrator,
     CalibrationError,
+    LabeledExample,
     fingerprint_for,
 )
 from .cascade import Document
-from .config import load_config, merge_results, read_labeled, read_results, write_results
+from .config import (
+    load_config,
+    merge_results,
+    read_labeled,
+    read_results,
+    write_labeled_examples,
+    write_results,
+)
 from .diagnostics import suggest_labels
 from .human import (
     Override,
@@ -168,6 +177,24 @@ def calibrate(
         typer.Option("--config", "-c", help="Project config (for fingerprinting)."),
     ] = None,
     min_examples: Annotated[int, typer.Option(help="Minimum labeled examples.")] = 50,
+    holdout: Annotated[
+        float,
+        typer.Option(
+            "--holdout",
+            help=(
+                "Fraction of the labeled set held out to score the fit, e.g. 0.25. "
+                "0 (the default) fits on everything and reports no score."
+            ),
+        ),
+    ] = 0.0,
+    seed: Annotated[int, typer.Option("--seed", help="Seed for the holdout split.")] = 0,
+    baseline: Annotated[
+        Path | None,
+        typer.Option(
+            "--baseline",
+            help="A previous calibrator JSON to score on the SAME holdout, for a before/after.",
+        ),
+    ] = None,
 ) -> None:
     """Fit an agreement->confidence calibrator from a labeled set.
 
@@ -175,6 +202,14 @@ def calibrate(
     you will score with this calibrator. The calibrator is fingerprinted to the
     labeled-set hash (and, with --config, the schema + extractor set) so reuse
     against a different config/labeled set is detectable.
+
+    With --holdout the set is split (seeded, so it is reproducible), the fit uses
+    only the training half, and Brier score plus expected calibration error are
+    reported against the held-out half. Scoring on the rows the calibrator was fit
+    on always looks good and tells you nothing.
+
+    --baseline scores a previous calibrator against that same holdout, which is
+    how you find out whether the labels you just added actually helped.
     """
     if method not in ("isotonic", "platt"):
         _err.print(f"[red]unknown method {method!r}; use isotonic|platt[/red]")
@@ -196,14 +231,48 @@ def calibrate(
         schema_paths=schema_paths, extractor_names=extractor_names, labeled_path=str(labeled)
     )
 
+    train = examples
+    test: list[LabeledExample] = []
+    if holdout > 0.0:
+        try:
+            train, test = split_labeled(examples, holdout=holdout, seed=seed)
+        except ValueError as exc:
+            _err.print(f"[red]bad holdout:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
+
     cal = AgreementCalibrator(method=method, fingerprint=fp, min_examples=min_examples)  # type: ignore[arg-type]
     try:
-        cal.fit(examples)
+        cal.fit(train)
     except CalibrationError as exc:
         _err.print(f"[red]calibration refused:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     cal.save(out)
-    _out.print(f"[green]Fitted {method} calibrator[/green] on {len(examples)} examples -> {out}")
+    _out.print(f"[green]Fitted {method} calibrator[/green] on {len(train)} examples -> {out}")
+
+    if not test:
+        _out.print("No held-out score computed. Pass --holdout 0.25 to get one.")
+        return
+
+    scores = evaluate_calibrator(cal, test)
+    _out.print(
+        f"Held-out ({scores.n} examples): brier={scores.brier:.4f} ece={scores.ece:.4f} "
+        "(lower is better)"
+    )
+    if baseline is None:
+        return
+    try:
+        previous = AgreementCalibrator.load(baseline)
+    except (OSError, ValueError, KeyError) as exc:
+        _err.print(f"[red]could not load baseline calibrator:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    before = evaluate_calibrator(previous, test)
+    _out.print(f"Baseline on the same holdout: brier={before.brier:.4f} ece={before.ece:.4f}")
+    delta_brier = scores.brier - before.brier
+    delta_ece = scores.ece - before.ece
+    verdict = "improved" if delta_brier < 0 and delta_ece <= 0 else "did not improve"
+    _out.print(
+        f"Calibration [bold]{verdict}[/bold]: brier {delta_brier:+.4f}, ece {delta_ece:+.4f}"
+    )
 
 
 @app.command()
@@ -358,6 +427,37 @@ def review(
             value = choice
         write_override(overrides, Override(doc_id=item.doc_id, path=item.path, value=value))
         _out.print(f"  [green]resolved[/green] -> {value!r}")
+
+
+@app.command(name="merge-labels")
+def merge_labels_command(
+    base: Annotated[Path, typer.Argument(help="Existing labeled JSONL.")],
+    new: Annotated[Path, typer.Argument(help="Newly labeled JSONL to fold in.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Write the merged set here.")],
+) -> None:
+    """Fold newly labeled rows into an existing calibration set.
+
+    Rows are deduplicated on (doc_id, path) and a re-labeled row REPLACES its
+    older version: a corrected label is the reason anyone relabels, and keeping
+    both would train the calibrator on a contradiction. Rows carrying neither
+    field cannot be identified, so they are appended and never deduplicated.
+
+    This is the step between `suggest-labels` and `calibrate`.
+    """
+    try:
+        base_rows = read_labeled(base)
+        new_rows = read_labeled(new)
+    except ValueError as exc:
+        _err.print(f"[red]invalid labeled set:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    merged = merge_labeled(base_rows, new_rows)
+    write_labeled_examples(out, merged)
+    replaced = len(base_rows) + len(new_rows) - len(merged)
+    _out.print(
+        f"[green]Merged[/green] {len(base_rows)} + {len(new_rows)} rows -> {len(merged)} "
+        f"({replaced} replaced) -> {out}"
+    )
 
 
 @app.command(name="suggest-labels")

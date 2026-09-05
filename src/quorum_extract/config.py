@@ -222,8 +222,11 @@ def read_labeled(path: str | Path) -> list[LabeledExample]:
     """Read labeled calibration rows from JSONL into :class:`LabeledExample`.
 
     Expected per-line schema: ``{"winning_share": float, "k": int,
-    "entropy": float, "correct": bool, "group"?: str}``. Missing ``k``/``entropy``
-    default to ``1`` / ``0.0``.
+    "entropy": float, "correct": bool, "group"?: str, "doc_id"?: str,
+    "path"?: str}``. Missing ``k``/``entropy`` default to ``1`` / ``0.0``.
+
+    ``doc_id`` and ``path`` are optional and carried through when present; they
+    are what makes a row identifiable when two labelled sets are merged.
 
     Raises:
         ValueError: if a row lacks a required key (``winning_share``/``correct``).
@@ -249,6 +252,37 @@ def read_labeled(path: str | Path) -> list[LabeledExample]:
                 ),
                 correct=bool(row["correct"]),
                 group=str(group_val) if group_val is not None else None,
+                doc_id=str(row["doc_id"]) if row.get("doc_id") is not None else None,
+                path=str(row["path"]) if row.get("path") is not None else None,
             )
         )
     return out
+
+
+def write_labeled_examples(path: str | Path, examples: Sequence[LabeledExample]) -> None:
+    """Write :class:`LabeledExample` rows as JSONL, in the schema read_labeled reads.
+
+    The dict-taking :func:`write_labeled` stays for callers that already hold raw
+    rows; this one is the round-trip partner of :func:`read_labeled`.
+
+    Optional fields are omitted when unset rather than written as ``null``, so a
+    round-trip through this function leaves a hand-written set looking the way
+    its author wrote it.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w", encoding="utf-8") as fh:
+        for example in examples:
+            row: dict[str, Any] = {
+                "winning_share": example.features.winning_share,
+                "k": example.features.k,
+                "entropy": example.features.entropy,
+                "correct": example.correct,
+            }
+            if example.group is not None:
+                row["group"] = example.group
+            if example.doc_id is not None:
+                row["doc_id"] = example.doc_id
+            if example.path is not None:
+                row["path"] = example.path
+            fh.write(json.dumps(row) + "\n")
