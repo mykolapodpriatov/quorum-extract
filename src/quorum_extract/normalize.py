@@ -109,10 +109,26 @@ def _canon_date(value: Any) -> str | None:
         if not s:
             return None
         try:
-            parsed = _date_parser.parse(s)
+            # Two defaults that disagree on every calendar and clock field.
+            # A field the string did not name stays at its default, so a
+            # disagreement means that field was missing. Filling it from
+            # today would make the key depend on the clock.
+            probe_a = _date_parser.parse(s, default=_dt.datetime(1, 1, 1, 3, 4, 5))
+            probe_b = _date_parser.parse(s, default=_dt.datetime(2, 2, 2, 6, 7, 8))
         except (ValueError, OverflowError):
             return None
-        dt = parsed
+        if (probe_a.year, probe_a.month, probe_a.day) != (
+            probe_b.year,
+            probe_b.month,
+            probe_b.day,
+        ):
+            return None
+        dt = probe_a.replace(
+            hour=probe_a.hour if probe_a.hour == probe_b.hour else 0,
+            minute=probe_a.minute if probe_a.minute == probe_b.minute else 0,
+            second=probe_a.second if probe_a.second == probe_b.second else 0,
+            microsecond=probe_a.microsecond if probe_a.microsecond == probe_b.microsecond else 0,
+        )
     if dt is None:
         return None
     if dt.tzinfo is None:

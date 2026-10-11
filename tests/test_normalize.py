@@ -99,6 +99,31 @@ def test_distinct_dates_differ() -> None:
     )
 
 
+def test_partial_dates_do_not_borrow_the_clock() -> None:
+    # A missing year, month, or day must not be filled from today. On the day
+    # this was written, "2020" became 2020-10-11, "Jan 2" became 2026-01-02,
+    # and "January 2020" became 2020-01-11.
+    year_only = normalize_value(scalar(dt.date), "2020")
+    month_day = normalize_value(scalar(dt.date), "Jan 2")
+    month_year = normalize_value(scalar(dt.date), "January 2020")
+    assert year_only != normalize_value(scalar(dt.date), "2020-10-11")
+    assert month_day != normalize_value(scalar(dt.date), "2026-01-02")
+    assert month_year != normalize_value(scalar(dt.date), "2020-01-11")
+    assert not year_only.startswith("date:")
+    assert not month_day.startswith("date:")
+    assert not month_year.startswith("date:")
+    # The same incomplete string still agrees with itself.
+    assert month_day == normalize_value(scalar(dt.date), "Jan 2")
+
+
+def test_explicit_time_with_defaulted_seconds_stays_a_datetime() -> None:
+    # Seconds omitted from the string are zero, not a reason to drop the time.
+    short = normalize_value(scalar(dt.datetime), "2020-01-02T14:30")
+    full = normalize_value(scalar(dt.datetime), "2020-01-02T14:30:00")
+    assert short == full
+    assert short.startswith("datetime:")
+
+
 # --------------------------------------------------------------------------- #
 # Strings: case + whitespace
 # --------------------------------------------------------------------------- #
